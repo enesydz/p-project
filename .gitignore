@@ -1,0 +1,23 @@
+# Model dosyaları
+*.gguf
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Üretilen HTML (büyük dosyalar)
+islem_network_tum.html
+network_*.html
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtual env
+venv/
+.env/
