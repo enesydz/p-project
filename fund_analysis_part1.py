@@ -1,5 +1,5 @@
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║  PART 1 — KONFİGÜRASYON · VERİ ÜRETİMİ · ANALİZ MOTORU        ║
+# ║  PART 1 — KONFİGÜRASYON · VERİ YÜKLEME · ANALİZ MOTORU         ║
 # ║  2 Dönem: 2025.09 (Sep) · 2026.03 (Mar)                        ║
 # ║  Bu hücreyi bir kez çalıştır — tüm hesaplamalar burada hazırlanır║
 # ╚══════════════════════════════════════════════════════════════════╝
@@ -25,10 +25,7 @@ from collections import Counter as _Counter
 warnings.filterwarnings("ignore")
 
 # ─── 1.1 Analiz Parametreleri ────────────────────────────────────
-X_DAYS      = 7
-N_MUSTERI   = 1000
-RANDOM_SEED = 42
-np.random.seed(RANDOM_SEED)
+X_DAYS = 7   # Alım/satım olayı etrafındaki ±gün penceresi
 
 # ─── 1.2 Dönem Tanımları  ▶▶  SADECE 2 DÖNEM ◀◀ ─────────────────
 DONEMLER     = ["2025.09", "2026.03"]
@@ -47,8 +44,8 @@ SEGMENT_SIRASI = [
     "Kurumsal", "Kurumsal_Premium", "Private_Banking", "Ultra_HNW",
 ]
 SEG_ISIMLER = SEGMENT_SIRASI
-SEG_ADETLER = [300, 210, 120, 120, 90, 60, 50, 30, 15, 5]
 
+# Segment başına referans fon büyüklüğü (TL) — segmenti tanımlamak için kullanılır
 SEG_FON_ORT = {
     "Bireysel_Standart":    15_000,
     "Bireysel_Premium":     75_000,
@@ -61,14 +58,6 @@ SEG_FON_ORT = {
     "Private_Banking":  25_000_000,
     "Ultra_HNW":        40_000_000,
 }
-SEG_GUN_ISLEM = {
-    "Bireysel_Standart": 0.8,  "Bireysel_Premium": 1.5, "Bireysel_Elite": 2.5,
-    "KOBİ": 3.0,               "KOBİ_Orta": 4.5,        "KOBİ_Büyük": 6.0,
-    "Kurumsal": 6.0,           "Kurumsal_Premium": 8.0, "Private_Banking": 10.0,
-    "Ultra_HNW": 12.0,
-}
-SINYAL_PROB = 0.35
-
 # ─── 1.4 Ürün & Renk Konfigürasyonu ─────────────────────────────
 URUNLER = ["Vadesiz", "Vadeli", "Yatırım", "Döviz", "Kredi"]
 
@@ -114,12 +103,13 @@ def style_axes(ax, grid=True, despine=True):
     ax.title.set_color(TITLE_CLR)
 
 def style_fig(fig, title=None, subtitle=None):
+    """Figure başlık + altyazı — alt panel başlıklarıyla çakışmaması için ayrı bölge."""
     fig.patch.set_facecolor(FIG_BG)
     if title:
-        fig.suptitle(title, fontsize=14, fontweight="bold", color=TITLE_CLR,
-                     x=0.5, y=0.99, va="top")
+        fig.suptitle(title, fontsize=13, fontweight="bold", color=TITLE_CLR,
+                     x=0.5, y=0.985, va="top")
     if subtitle:
-        fig.text(0.5, 0.965, subtitle, ha="center", fontsize=9.5,
+        fig.text(0.5, 0.948, subtitle, ha="center", fontsize=9,
                  color=SPINE_CLR, style="italic")
 
 def _short_label(s, maxlen=10):
@@ -151,160 +141,132 @@ print(f"   Segmentler ({len(SEGMENT_SIRASI)}): {', '.join(SEGMENT_SIRASI)}")
 
 
 # ══════════════════════════════════════════════════════════════════
-# § 2 · VERİ ÜRETİMİ
+# § 2 · KULLANICI VERİSİ  —  KENDİ DATA'NI BURAYA YÜKLEYİN
 # ══════════════════════════════════════════════════════════════════
-np.random.seed(RANDOM_SEED)
+#
+#  GEREKLİ SÜTUNLAR
+#  ─────────────────────────────────────────────────────────────
+#  musteri_df  : musteri_id | musteri_segmenti
+#
+#  alim_df     : musteri_id | tarih (date)   | donem (str)  |
+#                alim_tutari (float) | islem_adeti (int) | alim_flg (int=1)
+#
+#  satim_df    : musteri_id | tarih (date)   | donem (str)  |
+#                satim_tutari (float) | islem_adeti (int) | satim_flg (int=1)
+#
+#  islem_df    : musteri_id | musteri_segmenti | islem_tarihi (date) |
+#                islem_yonu («Giriş» / «Çıkış») |
+#                urun_grubu («Vadesiz»/«Vadeli»/«Yatırım»/«Döviz»/«Kredi») |
+#                islem_turu (str) | islem_tutari (float) | islem_adeti (int)
+#
+#  bakiye_df   : musteri_id | tarih (date) | donem (str) |
+#                fon_bakiye_tutari (float) | fon_bakiye_mtd_tutari (float)
+#
+#  donem değerleri DONEM_SIRASI ile TAM eşleşmeli: ["2025.09", "2026.03"]
+#  musteri_segmenti değerleri SEGMENT_SIRASI ile TAM eşleşmeli
+#  ─────────────────────────────────────────────────────────────
+#
+#  ── CSV YÜKLEME (önerilen) ────────────────────────────────────
+#
+#  musteri_df = pd.read_csv("musteri.csv")
+#  alim_df    = pd.read_csv("alim.csv",    parse_dates=["tarih"])
+#  satim_df   = pd.read_csv("satim.csv",   parse_dates=["tarih"])
+#  islem_df   = pd.read_csv("islem.csv",   parse_dates=["islem_tarihi"])
+#  bakiye_df  = pd.read_csv("bakiye.csv",  parse_dates=["tarih"])
+#
+#  ── EXCEL YÜKLEME ─────────────────────────────────────────────
+#
+#  with pd.ExcelFile("banka_fon_verisi.xlsx") as xls:
+#      musteri_df = pd.read_excel(xls, "musteriler")
+#      alim_df    = pd.read_excel(xls, "alimlar",    parse_dates=["tarih"])
+#      satim_df   = pd.read_excel(xls, "satimlar",   parse_dates=["tarih"])
+#      islem_df   = pd.read_excel(xls, "islemler",   parse_dates=["islem_tarihi"])
+#      bakiye_df  = pd.read_excel(xls, "bakiyeler",  parse_dates=["tarih"])
+#
+# ══════════════════════════════════════════════════════════════════
+#  ÖRNEK ŞABLON — Kendi verinle aşağıdaki DataFrameleri değiştir
+# ══════════════════════════════════════════════════════════════════
 
-musteri_ids    = [f"MUS{str(i).zfill(5)}" for i in range(1, N_MUSTERI + 1)]
-segment_dizisi = np.repeat(SEG_ISIMLER, SEG_ADETLER)
-musteri_df     = pd.DataFrame({"musteri_id": musteri_ids, "musteri_segmenti": segment_dizisi})
-seg_map        = musteri_df.set_index("musteri_id")["musteri_segmenti"].to_dict()
-
-def lognorm_tutar(ort_dizi, sigma=0.55):
-    ort_dizi = np.maximum(ort_dizi, 1.0)
-    return np.round(
-        np.exp(np.log(ort_dizi) + np.random.randn(len(ort_dizi)) * sigma) / 100) * 100
-
-# ── Alım DF ──────────────────────────────────────────────────────
-alim_kayitlar = []
-for donem in DONEMLER:
-    bas = pd.Timestamp(DONEM_ARALIK[donem][0])
-    bit = pd.Timestamp(DONEM_ARALIK[donem][1])
-    gun_sayisi = (bit - bas).days + 1
-    for seg in SEG_ISIMLER:
-        seg_musteriler = musteri_df[musteri_df["musteri_segmenti"] == seg]["musteri_id"].values
-        n_katilan = int(len(seg_musteriler) * np.random.uniform(0.55, 0.65))
-        katilan   = np.random.choice(seg_musteriler, size=n_katilan, replace=False)
-        for m in katilan:
-            n_islem  = np.random.randint(1, 5)
-            gun_ofset = np.random.randint(0, gun_sayisi, size=n_islem)
-            tarihler  = bas + pd.to_timedelta(gun_ofset, unit="D")
-            tutarlar  = lognorm_tutar(np.full(n_islem, SEG_FON_ORT[seg]))
-            for k in range(n_islem):
-                alim_kayitlar.append({"musteri_id": m, "tarih": tarihler[k],
-                    "donem": donem, "alim_tutari": tutarlar[k],
-                    "islem_adeti": 1, "alim_flg": 1})
-
-alim_df = (pd.DataFrame(alim_kayitlar)
-           .assign(tarih=lambda d: pd.to_datetime(d["tarih"]))
-           .sort_values(["musteri_id","tarih"]).reset_index(drop=True))
-
-# ── Satım DF ─────────────────────────────────────────────────────
-satim_kayitlar = []
-for donem in DONEMLER:
-    bit       = pd.Timestamp(DONEM_ARALIK[donem][1])
-    alim_uniq = (alim_df[alim_df["donem"] == donem]
-                 .sort_values("tarih").drop_duplicates("musteri_id", keep="first"))
-    satim_yapanlar = alim_uniq.sample(frac=0.40, random_state=RANDOM_SEED)
-    for _, row in satim_yapanlar.iterrows():
-        m_id = row["musteri_id"]; seg = seg_map[m_id]
-        base_t = row["tarih"]; kalan = int((bit - base_t).days)
-        if kalan < 1: continue
-        max_offset = min(kalan, 45); n_islem = np.random.randint(1, 4)
-        tutarlar = lognorm_tutar(
-            np.full(n_islem, SEG_FON_ORT[seg] * np.random.uniform(0.60, 0.90)))
-        for k in range(n_islem):
-            offset = np.random.randint(1, max_offset + 1)
-            t = min(base_t + pd.Timedelta(days=int(offset)), bit)
-            satim_kayitlar.append({"musteri_id": m_id, "tarih": t, "donem": donem,
-                "satim_tutari": tutarlar[k], "islem_adeti": 1, "satim_flg": 1})
-
-satim_df = (pd.DataFrame(satim_kayitlar)
-            .assign(tarih=lambda d: pd.to_datetime(d["tarih"]))
-            .sort_values(["musteri_id","tarih"]).reset_index(drop=True))
-
-# ── İşlem DF ─────────────────────────────────────────────────────
-URUN_ISLEM = pd.DataFrame([
-    ("Vadesiz","EFT","Giriş",0.15),("Vadesiz","EFT","Çıkış",0.15),
-    ("Vadesiz","Havale","Giriş",0.08),("Vadesiz","Havale","Çıkış",0.08),
-    ("Vadesiz","ATM_Çekim","Çıkış",0.06),("Vadesiz","Fatura_Ödeme","Çıkış",0.05),
-    ("Vadeli","Vadeli_Açılış","Çıkış",0.04),("Vadeli","Vadeli_Kapanış","Giriş",0.04),
-    ("Yatırım","Hisse_Alım","Çıkış",0.05),("Yatırım","Hisse_Satım","Giriş",0.04),
-    ("Yatırım","TahvilBono_Alım","Çıkış",0.03),("Yatırım","TahvilBono_Satım","Giriş",0.03),
-    ("Yatırım","Repo_Giriş","Giriş",0.03),
-    ("Döviz","Döviz_Alım","Çıkış",0.06),("Döviz","Döviz_Satım","Giriş",0.05),
-    ("Kredi","Kredi_Ödemesi","Çıkış",0.06),("Kredi","Kredi_Kullanımı","Giriş",0.03),
-], columns=["urun_grubu","islem_turu","islem_yonu","agirlik"])
-
-AGIRLIKLAR   = (URUN_ISLEM["agirlik"] / URUN_ISLEM["agirlik"].sum()).values
-TOPLAM_GUN   = (ISLEM_BITIS - ISLEM_BASLANGIC).days + 1
-TARIH_DIZISI = pd.date_range(ISLEM_BASLANGIC, ISLEM_BITIS, freq="D")
-
-lambda_dizisi = musteri_df["musteri_segmenti"].map(SEG_GUN_ISLEM).values
-toplam_islem  = np.random.poisson(lambda_dizisi * TOPLAM_GUN)
-musteri_rep   = musteri_df.loc[musteri_df.index.repeat(toplam_islem)].reset_index(drop=True)
-N_islem       = len(musteri_rep)
-
-rand_tarih_idx = np.random.randint(0, TOPLAM_GUN, size=N_islem)
-rand_tarihler  = TARIH_DIZISI[rand_tarih_idx]
-tx_idx         = np.random.choice(len(URUN_ISLEM), size=N_islem, p=AGIRLIKLAR)
-seg_ort_arr    = musteri_rep["musteri_segmenti"].map(
-    {s: SEG_FON_ORT[s] * 0.10 for s in SEG_FON_ORT}).values
-tutarlar_arr   = lognorm_tutar(seg_ort_arr, sigma=0.6)
-
-islem_df = pd.DataFrame({
-    "musteri_id":       musteri_rep["musteri_id"].values,
-    "musteri_segmenti": musteri_rep["musteri_segmenti"].values,
-    "islem_tarihi":     rand_tarihler,
-    "islem_yonu":       URUN_ISLEM["islem_yonu"].values[tx_idx],
-    "urun_grubu":       URUN_ISLEM["urun_grubu"].values[tx_idx],
-    "islem_turu":       URUN_ISLEM["islem_turu"].values[tx_idx],
-    "islem_tutari":     tutarlar_arr,
-    "islem_adeti":      1,
+musteri_df = pd.DataFrame({
+    "musteri_id":       ["MUS00001", "MUS00002", "MUS00003", "MUS00004", "MUS00005"],
+    "musteri_segmenti": ["Bireysel_Standart", "Bireysel_Premium", "KOBİ",
+                         "Private_Banking",   "Ultra_HNW"],
 })
 
-# Davranışsal sinyal
-def sinyal_uret(event_df, gun_ofset, yon, urun, tur, tarih_kolon="tarih"):
-    tmp = event_df[["musteri_id", tarih_kolon]].copy()
-    tmp["islem_tarihi"] = pd.to_datetime(tmp[tarih_kolon]) + pd.Timedelta(days=gun_ofset)
-    tmp = tmp[(tmp["islem_tarihi"] >= ISLEM_BASLANGIC) &
-              (tmp["islem_tarihi"] <= ISLEM_BITIS)].copy()
-    if tmp.empty: return pd.DataFrame()
-    mask = np.random.random(len(tmp)) < SINYAL_PROB
-    tmp  = tmp[mask].copy()
-    if tmp.empty: return pd.DataFrame()
-    tmp["musteri_segmenti"] = tmp["musteri_id"].map(seg_map)
-    tmp["islem_yonu"] = yon; tmp["urun_grubu"] = urun
-    tmp["islem_turu"] = tur; tmp["islem_adeti"] = 1
-    seg_ort = tmp["musteri_segmenti"].map(
-        {s: SEG_FON_ORT[s] * 0.08 for s in SEG_FON_ORT}).values
-    tmp["islem_tutari"] = lognorm_tutar(seg_ort, sigma=0.5)
-    return tmp[["musteri_id","musteri_segmenti","islem_tarihi",
-                "islem_yonu","urun_grubu","islem_turu","islem_tutari","islem_adeti"]]
+alim_df = pd.DataFrame({
+    "musteri_id":   ["MUS00001","MUS00001","MUS00002","MUS00003","MUS00004","MUS00005"],
+    "tarih":        pd.to_datetime(["2025-09-05","2026-03-12","2025-09-18",
+                                    "2026-03-08","2025-09-22","2026-03-15"]),
+    "donem":        ["2025.09","2026.03","2025.09","2026.03","2025.09","2026.03"],
+    "alim_tutari":  [50_000,80_000,500_000,750_000,5_000_000,15_000_000],
+    "islem_adeti":  [1,1,1,1,1,1],
+    "alim_flg":     [1,1,1,1,1,1],
+})
 
-sinyal_bloklar = []
-for g in range(1, 8):
-    b = sinyal_uret(alim_df,  -g, "Giriş", "Vadesiz", "EFT")
-    if not b.empty: sinyal_bloklar.append(b)
-for g in range(1, 8):
-    b = sinyal_uret(satim_df,  g, "Çıkış", "Vadesiz", "EFT")
-    if not b.empty: sinyal_bloklar.append(b)
-if sinyal_bloklar:
-    islem_df = (pd.concat([islem_df] + sinyal_bloklar, ignore_index=True)
-                .sort_values(["musteri_id","islem_tarihi"]).reset_index(drop=True))
+satim_df = pd.DataFrame({
+    "musteri_id":    ["MUS00001","MUS00002","MUS00004"],
+    "tarih":         pd.to_datetime(["2025-09-20","2026-03-25","2026-03-28"]),
+    "donem":         ["2025.09","2026.03","2026.03"],
+    "satim_tutari":  [20_000,200_000,2_000_000],
+    "islem_adeti":   [1,1,1],
+    "satim_flg":     [1,1,1],
+})
 
-# ── Bakiye DF ────────────────────────────────────────────────────
-net_fon = (alim_df.groupby("musteri_id")["alim_tutari"].sum()
-           .sub(satim_df.groupby("musteri_id")["satim_tutari"].sum(), fill_value=0))
-bakiye_kayitlar = []
-for m_id in musteri_ids:
-    seg = seg_map[m_id]
-    baz = max(net_fon.get(m_id, 0) * 0.8, SEG_FON_ORT[seg] * 0.5)
-    for i, donem in enumerate(DONEMLER):
-        carpan     = (1 + 0.03 * i) * np.random.uniform(0.85, 1.20)
-        bakiye     = round(baz * carpan / 100) * 100
-        bakiye_mtd = round(bakiye * np.random.uniform(0.90, 1.10) / 100) * 100
-        bakiye_kayitlar.append({
-            "musteri_id": m_id, "tarih": pd.Timestamp(DONEM_ARALIK[donem][1]),
-            "donem": donem, "fon_bakiye_tutari": max(bakiye, 0),
-            "fon_bakiye_mtd_tutari": max(bakiye_mtd, 0),
-        })
-bakiye_df = (pd.DataFrame(bakiye_kayitlar)
-             .assign(tarih=lambda d: pd.to_datetime(d["tarih"]))
-             .sort_values(["musteri_id","tarih"]).reset_index(drop=True))
+islem_df = pd.DataFrame({
+    "musteri_id":       ["MUS00001","MUS00001","MUS00002","MUS00003",
+                         "MUS00004","MUS00005","MUS00001","MUS00003"],
+    "musteri_segmenti": ["Bireysel_Standart","Bireysel_Standart","Bireysel_Premium",
+                         "KOBİ","Private_Banking","Ultra_HNW",
+                         "Bireysel_Standart","KOBİ"],
+    "islem_tarihi":     pd.to_datetime(["2025-09-02","2025-09-04","2025-09-17",
+                                        "2026-03-05","2026-03-10","2025-09-01",
+                                        "2026-03-11","2025-09-25"]),
+    "islem_yonu":       ["Giriş","Çıkış","Giriş","Giriş","Çıkış","Giriş","Çıkış","Giriş"],
+    "urun_grubu":       ["Vadesiz","Vadesiz","Yatırım","Döviz",
+                         "Vadeli","Yatırım","Kredi","Vadesiz"],
+    "islem_turu":       ["EFT","EFT","Hisse_Alım","Döviz_Satım",
+                         "Vadeli_Açılış","Hisse_Satım","Kredi_Ödemesi","Havale"],
+    "islem_tutari":     [5_000,3_000,45_000,200_000,300_000,500_000,8_000,4_000],
+    "islem_adeti":      [1,1,1,1,1,1,1,1],
+})
 
-print(f"\n✅ § 2 Veri üretildi: {len(musteri_df):,} müşteri · {len(islem_df):,} işlem · "
-      f"{len(alim_df):,} alım · {len(satim_df):,} satım")
+bakiye_df = pd.DataFrame({
+    "musteri_id": [
+        "MUS00001","MUS00001","MUS00002","MUS00002",
+        "MUS00003","MUS00003","MUS00004","MUS00004","MUS00005","MUS00005",
+    ],
+    "tarih": pd.to_datetime([
+        "2025-09-30","2026-03-31","2025-09-30","2026-03-31",
+        "2025-09-30","2026-03-31","2025-09-30","2026-03-31","2025-09-30","2026-03-31",
+    ]),
+    "donem": [
+        "2025.09","2026.03","2025.09","2026.03",
+        "2025.09","2026.03","2025.09","2026.03","2025.09","2026.03",
+    ],
+    "fon_bakiye_tutari": [
+        120_000,180_000,800_000,1_100_000,
+        3_000_000,4_500_000,8_000_000,10_000_000,20_000_000,25_000_000,
+    ],
+    "fon_bakiye_mtd_tutari": [
+        115_000,175_000,780_000,1_050_000,
+        2_900_000,4_300_000,7_800_000,9_700_000,19_500_000,24_000_000,
+    ],
+})
+
+# ── Zorunlu tip dönüşümleri ────────────────────────────────────
+alim_df["tarih"]         = pd.to_datetime(alim_df["tarih"])
+satim_df["tarih"]        = pd.to_datetime(satim_df["tarih"])
+islem_df["islem_tarihi"] = pd.to_datetime(islem_df["islem_tarihi"])
+bakiye_df["tarih"]       = pd.to_datetime(bakiye_df["tarih"])
+
+seg_map = musteri_df.set_index("musteri_id")["musteri_segmenti"].to_dict()
+
+_eksik = [s for s in SEGMENT_SIRASI if s not in musteri_df["musteri_segmenti"].unique()]
+if _eksik:
+    print(f"  ⚠️  Veride eksik segmentler (analiz boş satır içerebilir): {_eksik}")
+
+print(f"\n✅ § 2 Veri yüklendi: {len(musteri_df):,} müşteri · "
+      f"{len(islem_df):,} işlem · {len(alim_df):,} alım · {len(satim_df):,} satım")
 
 
 # ══════════════════════════════════════════════════════════════════

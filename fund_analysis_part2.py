@@ -102,7 +102,7 @@ ax6.legend(handles=[mpatches.Patch(facecolor="#555",label="Alım"),
 
 style_fig(fig, "A — Genel Bakış · Banka Fon Müşteri Analizi  ·  2025.09 & 2026.03",
           f"Penetrasyon · AUM · Sadakat · Bakiye Dilimi  |  {len(events_df):,} olay · {_N} segment · 2 dönem")
-plt.tight_layout(rect=[0,0,1,0.96])
+plt.tight_layout(rect=[0,0,1,0.89])
 plt.show()
 
 
@@ -186,7 +186,7 @@ ax6.tick_params(labelsize=8.5)
 
 style_fig(fig, "B — Fon Alım Davranışı  ·  Segment × Dönem Bazlı",
           f"Pre/Post Alım Analizi  |  Ürün Mix · Giriş Oranı · Net Akış · Geçiş Matrisi  ·  2 dönem")
-plt.tight_layout(rect=[0,0,1,0.96])
+plt.tight_layout(rect=[0,0,1,0.89])
 plt.show()
 
 
@@ -241,7 +241,7 @@ ax4.tick_params(labelsize=8.5)
 
 style_fig(fig, "C — Fon Satım Davranışı  ·  Segment × Dönem Bazlı",
           "Pre/Post Satım Analizi  |  Ürün Mix · Giriş Oranı · Geçiş Matrisi  ·  2 dönem")
-plt.tight_layout(rect=[0,0,1,0.96])
+plt.tight_layout(rect=[0,0,1,0.89])
 plt.show()
 
 
@@ -298,7 +298,7 @@ ax_d4.title.set_color(TITLE_CLR)
 
 style_fig(fig_d, "D — Dönemsel Analizler  ·  Segment × Dönem  ·  2025.09 vs 2026.03",
           "Alım · Satım · Net Akış · İşlem Yoğunluğu  ·  Heatmap bazlı karşılaştırma")
-plt.tight_layout(rect=[0,0,1,0.97])
+plt.tight_layout(rect=[0,0,1,0.89])
 plt.show()
 
 # D2 — Heavy Buyer/Seller
@@ -341,7 +341,7 @@ ax_g4.legend(title="Segment", loc="upper left", fontsize=7, ncol=5); style_axes(
 
 style_fig(fig_g, "D2 — Heavy Buyer / Seller Segment Analizi  ·  2 Dönem",
           f"Top %25 alım/satım müşteri profili  |  {len(_heavy_ids):,} heavy buyer · {_N} segment")
-plt.tight_layout(rect=[0,0,1,0.97])
+plt.tight_layout(rect=[0,0,1,0.89])
 plt.show()
 
 
@@ -429,7 +429,7 @@ ax_bg.set_xlabel("Frekans",fontsize=8.5); style_axes(ax_bg)
 
 style_fig(fig1, "E — Sekansiyel İşlem Ağı · Geçiş Olasılıkları  ·  2 Dönem",
           f"{len(_pairs_all):,} geçiş · eşik ≥{NET_SEQ_MIN_EDGE} · görsel ≥%{NET_SEQ_MIN_PCT:.0f}")
-plt.tight_layout(rect=[0,0,1,0.95])
+plt.tight_layout(rect=[0,0,1,0.89])
 plt.show()
 
 # Segment ağları
@@ -444,7 +444,7 @@ for _idx, _seg in enumerate(SEGMENT_SIRASI):
         _sp.set_edgecolor(SEG_RENK[_seg]); _sp.set_linewidth(2.4); _sp.set_visible(True)
     _ax.set_facecolor(AXES_BG)
 style_fig(fig2, "E2 — Segment Bazlı Sekansiyel Ağlar  ·  2 Dönem")
-plt.tight_layout(rect=[0,0,1,0.965])
+plt.tight_layout(rect=[0,0,1,0.89])
 plt.show()
 
 
@@ -493,7 +493,7 @@ if not ALIM_BAK_HM.empty:
     _yt = [SEG_SHORT[SEGMENT_SIRASI.index(s)] for s in SEGMENT_SIRASI]
     _hm_base = dict(linewidths=0.4, linecolor="#E2E8F0", yticklabels=_yt)
 
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12), constrained_layout=True)
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     style_fig(fig, "G — t-1 Dönemi Bakiyesine Göre Alım / Satım Oranları  ·  2025.09→2026.03",
               "Alım/Satım tutarının t-1 bakiyesine oranı (Medyan %)  ·  İlk dönem = referans")
 
@@ -525,6 +525,7 @@ if not ALIM_BAK_HM.empty:
     ax.set_title("Satım/Bakiye Değişimi (pp · ΔPoP)"); ax.set_xlabel("Dönem")
     ax.tick_params(axis="x", rotation=15, labelsize=8.5); ax.tick_params(axis="y", labelsize=7.5)
 
+    plt.tight_layout(rect=[0,0,1,0.89])
     plt.show()
     print("✅ t-1 Bakiye heatmapler gösterildi")
 else:
@@ -538,7 +539,7 @@ _yt  = [SEG_SHORT[SEGMENT_SIRASI.index(s)] for s in SEGMENT_SIRASI]
 _xt  = [FG_TURLER_KISALT.get(t,t) for t in FG_TURLER]
 _hm_kw = dict(linewidths=0.3, linecolor="#E2E8F0", annot=True, fmt=".0f", yticklabels=_yt)
 
-fig1, axes1 = plt.subplots(2, 2, figsize=(22, 14), constrained_layout=True)
+fig1, axes1 = plt.subplots(2, 2, figsize=(22, 14))
 style_fig(fig1, "H — Fon-Geçmeyen İşlem Türleri — Pre/Post Alım & Satım  (Segment · %)",
           "Mavi=Pre-Buy · Yeşil=Post-Buy · Turuncu=Pre-Sell · Mor=Post-Sell  ·  2 dönem konsolide")
 
@@ -553,11 +554,12 @@ for ax, data, base_color, ttl in _panels:
     sns.heatmap(data, ax=ax, cmap=cmap_custom, cbar_kws={"label":"% payı","shrink":0.78}, **_hm_kw)
     ax.set_title(ttl); ax.set_xticklabels(_xt, rotation=30, ha="right", fontsize=8)
     ax.tick_params(axis="y", labelsize=7.5)
+plt.tight_layout(rect=[0,0,1,0.89])
 plt.show()
 
 # Dönem bazlı 2 sütun
 _empty = pd.DataFrame(0.0, index=SEGMENT_SIRASI, columns=FG_TURLER)
-fig2, axes2 = plt.subplots(2, 2, figsize=(22, 12), constrained_layout=True)
+fig2, axes2 = plt.subplots(2, 2, figsize=(22, 12))
 style_fig(fig2, "H2 — Fon-Geçmeyen Sekans — Dönem Bazlı Post−Pre Farkı (pp)  ·  2025.09 & 2026.03",
           "Yeşil=Post sonrası artış · Kırmızı=azalış  |  Üst: Alım · Alt: Satım")
 
@@ -582,6 +584,7 @@ for col_i, d in enumerate(DONEM_SIRASI):
     ax.set_xticklabels(_xt, rotation=35, ha="right", fontsize=7)
     if col_i==0: ax.set_ylabel("Satım Sekansı", fontsize=9, fontweight="bold")
 
+plt.tight_layout(rect=[0,0,1,0.89])
 plt.show()
 print("✅ Fon-geçmeyen sekans analizi tamamlandı")
 
