@@ -14,6 +14,11 @@ __pycache__/
 islem_network_tum.html
 network_*.html
 
+# Propensity pipeline outputs
+propensity_project/propensity_outputs/
+propensity_project/*_executed*.ipynb
+propensity_project/*.log
+
 # OS
 .DS_Store
 Thumbs.db
