@@ -26,3 +26,15 @@ Thumbs.db
 # Virtual env
 venv/
 .env/
+
+# Legacy root analytics files kept outside the propensity project
+/.streamlit/
+/analytics_engine.py
+/fund_analysis*.ipynb
+/fund_analysis_part1.py
+/fund_analysis_part2.py
+/make_notebook.py
+/requirements.txt
+/fund_propensity.py
+/make_propensity_notebook.py
+/fund_propensity_ml_executed.ipynb
