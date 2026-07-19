@@ -52,13 +52,22 @@ def sheet_frame(sheets: dict[str, pd.DataFrame], *names: str) -> pd.DataFrame:
 def show_status(sheets: dict[str, pd.DataFrame]) -> None:
     status = sheet_frame(sheets, "20_Model_Status_Summary", "Model_Status_Summary")
     if status.empty:
-        st.info("Model status sheeti bu raporda bulunmuyor.")
-        return
+        metrics = sheet_frame(sheets, "11_Model_Metrics", "Model_Metrics")
+        if not metrics.empty and "status" in metrics.columns:
+            status = metrics
+        else:
+            st.info("Bu eski workbook şemasında ayrı model status sheeti bulunmuyor.")
+            return
     st.dataframe(status, use_container_width=True, hide_index=True)
 
 
 def show_performance(sheets: dict[str, pd.DataFrame]) -> None:
-    performance = sheet_frame(sheets, "17_Performance_Summary", "Performance_Summary")
+    performance = sheet_frame(
+        sheets,
+        "17_Performance_Summary",
+        "16_Performance_Summary",
+        "Performance_Summary",
+    )
     if performance.empty:
         st.info("Performance summary sheeti bu raporda bulunmuyor veya boş.")
         return
@@ -92,8 +101,13 @@ def show_performance(sheets: dict[str, pd.DataFrame]) -> None:
 
 def show_overview(sheets: dict[str, pd.DataFrame]) -> None:
     runtime = sheet_frame(sheets, "00_Runtime_Summary", "Runtime_Summary")
-    general = sheet_frame(sheets, "18_General_Summary", "General_Summary")
-    performance = sheet_frame(sheets, "17_Performance_Summary", "Performance_Summary")
+    general = sheet_frame(sheets, "18_General_Summary", "17_General_Summary", "General_Summary")
+    performance = sheet_frame(
+        sheets,
+        "17_Performance_Summary",
+        "16_Performance_Summary",
+        "Performance_Summary",
+    )
     status = sheet_frame(sheets, "20_Model_Status_Summary", "Model_Status_Summary")
 
     columns = st.columns(4)
