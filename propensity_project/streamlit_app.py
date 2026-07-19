@@ -10,7 +10,7 @@ import plotly.express as px
 import streamlit as st
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent / "propensity_project"
+PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_ROOT = Path(os.getenv("PROPENSITY_OUTPUT_DIR", PROJECT_ROOT / "propensity_outputs"))
 DEFAULT_REPORT_NAMES = (
     "fund_propensity_pipeline_audit_segmented_latest_v2.xlsx",
