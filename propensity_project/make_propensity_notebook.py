@@ -135,7 +135,7 @@ def start_stage(stage: str) -> float:
 def log_stage(stage: str, started: float) -> None:
     print(f"[{stage}] tamamlandı | süre={time.perf_counter() - started:.2f} sn")
 
-DATA_ROOT = Path(os.getenv("PROPENSITY_DATA_ROOT", r"C:\data\fund_propensity"))
+DATA_ROOT = Path(os.getenv("PROPENSITY_DATA_ROOT", "C:/data/fund_propensity"))
 
 # KULLANICI CONFIG: Model grid'ini ve veri yeterlilik kosullarini burada degistirin.
 # Her x/y/r degeri test edilir. Dosya yolları ve kolonlar aşağıdaki manuel config'ten değiştirilir.
