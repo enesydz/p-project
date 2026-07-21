@@ -63,6 +63,20 @@ Notebook yalnızca şu beş uygulama bölümünü içerir: `Data Load`, `Preproc
 - Sürekli feature standardizasyonu: train, test ve OOT feature değerleri enflasyon tablosundan hesaplanan ortak OOT referans tarihine taşınır; target üretimi nominal iş kuralı üzerinde korunur
 - Chart çıktıları: notebook output'unda teknik/genel performans chart'ları, output klasöründe PNG dosyaları ve Excel'de gömülü chart'lar
 
+### Manuel aylık veri yükleme sözleşmesi
+
+Notebook veri üretmez ve sentetik fallback kullanmaz. `Data Load` hücresindeki kullanıcı config'inde veri klasörü ile beş aylık tablo dosyası elle belirtilir. Tüm tablolar müşteri ID + ay anahtarıyla bağlanır; beklenen dönem `2025-09` ile `2026-06` arasındadır.
+
+| Config dosyası | Zorunlu alanlar | Kullanım |
+|---|---|---|
+| `INPUT_TABLE_FILE` | `musteri_id`, `month`, opsiyonel `segment`, aylık değişkenler | Müşteri-ay ana tablosu ve feature adayları |
+| `ACTIVITY_TABLE_FILE` | `musteri_id`, `month`, `ppf_aktif`, `nf_aktif` | PPF/NF aktiflik flag'leri; yalnızca `0/1` |
+| `FUND_TABLE_FILE` | `musteri_id`, `month`, `para_flg`, `tutar` | `para_flg=1` PPF, `para_flg=0` NF fon tutarı |
+| `TRANSACTION_TABLE_FILE` | `musteri_id`, `month`, `ppf_flg`, `alim_tutari`, `satim_tutari` | `ppf_flg=1` PPF, `ppf_flg=0` NF; net alım = alım - satım |
+| `INFLATION_TABLE_FILE` | `month`, `inflation_rate` | Sürekli tutarları ortak OOT ayına taşımak için aylık enflasyon |
+
+Dosya adları CSV, TXT veya Parquet olabilir. Farklı kolon adları varsa Data Load hücresindeki kolon config değerleri değiştirilir. Input tablosundaki aylık değişkenler `INPUT_TABLE_FEATURE_COLUMNS` ile açıkça seçilebilir.
+
 ### Normalize veri sözleşmesi
 
 Notebook gerçek kaynak tablolarını aşağıdaki dosya adlarıyla CSV veya Parquet olarak bekler. `PROPENSITY_DATA_ROOT` klasöründe Parquet varsa CSV'ye göre önceliklidir.
@@ -85,9 +99,9 @@ python make_propensity_notebook.py
 jupyter notebook fund_propensity_ml.ipynb
 ```
 
-`PROPENSITY_DATA_ROOT` verilmezse notebook sentetik fixture ile smoke test çalıştırır; bu fixture üretim modeli veya performans kanıtı değildir.
+`PROPENSITY_DATA_ROOT` kullanıcı tarafından belirtilen manuel tablo klasörüdür. Klasör veya tablo config'i eksikse notebook açık hata verir; sentetik fallback yoktur.
 
-Örnek fixture da gerçek geniş aktivite şemasını kullanır: `musteri_id`, `month`, `ppf_aktif`, `nf_aktif`. Notebook veri kökü verilmezse 10.000 müşterili, 18 aylık, beş segmentli ve yaklaşık `%0.1` hedef oranını temsil eden `make_rare_event_fixture` kullanır. Bu fixture ile beş segmentte dört model ailesi (`newsell/upsell × para_piyasasi/nitelikli`) Optuna-LightGBM üzerinden uçtan uca çalıştırılır ve `propensity_outputs` altında OOT skorları, model metrikleri, Optuna trial kayıtları ve kampanya listesi üretilir. `segment` model girdisi değildir; model partition anahtarıdır.
+Gerçek manuel tablolarla beş segmentte dört model ailesi (`newsell/upsell × para_piyasasi/nitelikli`) çalıştırılır. `segment` model girdisi değildir; model partition anahtarıdır.
 
 ### Audit ve Excel çıktısı
 
@@ -114,7 +128,7 @@ Notebook içindeki `Data Load` kod hücresinde `KULLANICI CONFIG` bölümü bulu
 
 Aynı bölümde `SEGMENT_COLUMN`, `SEGMENT_VALUES`, `SYNTHETIC_CUSTOMER_COUNT`, `SYNTHETIC_TARGET_RATE`, `MIN_POSITIVE_TRAIN`, `MIN_POSITIVE_TEST`, `MIN_POSITIVE_OOT`, `TEST_MONTHS`, `OOT_MONTHS`, `TOP_K`, `RARE_EVENT_RATE_THRESHOLD`, `MISSING_THRESHOLD`, `CORRELATION_THRESHOLD`, `MAX_CATEGORICAL_LEVELS`, `MAX_CATEGORICAL_RATIO`, `OUTLIER_LOWER_QUANTILE`, `OUTLIER_UPPER_QUANTILE` ve `ADD_MISSING_INDICATORS` model öncesi adaptive preprocessing ve rare-event kurallarıdır. `SEGMENT_VALUES = (1, 2, 3, 4, 5)` her segment için bağımsız model kurulacağını belirler. `TEST_MONTHS` ve `OOT_MONTHS` düşük oranlı hedeflerde tek ay yerine daha geniş değerlendirme penceresi açar; `MIN_POSITIVE_*` değerleri pozitif örneği yetersiz splitleri model performansı gibi raporlamadan `skipped` olarak işaretler. Diğer kurallar her segment/configuration'ın train splitinde ayrı fit edilir; validation/OOT dağılımı karar vermek için kullanılmaz. `TOP_K` içinde `0.001` gibi oranlar desteklenir ve kolon adları çakışmayacak biçimde üretilir.
 
-`SAMPLE_RUN` yalnızca `PROPENSITY_DATA_ROOT` verilmediğinde sentetik veri kaynağını ve Optuna deneme süresini etkiler; x/y/r grid'ini artık daraltmaz. Gerçek veriyi kullanmak için `PROPENSITY_DATA_ROOT` ortam değişkenine `customers`, `activity`, `flows` ve varsa `monthly_features`/`inflation` dosyalarının bulunduğu klasörü verin. Notebook'u yeniden üretmek için `python make_propensity_notebook.py` çalıştırın; ardından `fund_propensity_ml.ipynb` içindeki config hücresini düzenleyerek çalıştırın.
+`CORRELATION_SAMPLE_SIZE` yalnızca train verisinden korelasyon matrisi hesaplanırken kullanılan satır örneklem büyüklüğüdür; diğer preprocessing adımlarının sample size'ı değildir. `None` verilirse tüm train satırları kullanılır. Notebook'u yeniden üretmek için `python make_propensity_notebook.py` çalıştırın; ardından `fund_propensity_ml.ipynb` içindeki manuel config hücresini düzenleyerek çalıştırın.
 
 Gerçek veri kolonları bu sözleşmeyle aynı değilse önce normalize edilmiş Parquet katmanı üretilmelidir. Kaynak kolon eşlemesini bu katmana taşımak, notebook içinde sessiz ve denetlenemez dönüşümler yapmaktan daha güvenlidir.
 

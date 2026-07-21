@@ -31,6 +31,7 @@ class PropensityConfig:
     campaign_capacity: int | None = None
     missing_threshold: float = 0.95
     correlation_threshold: float = 0.95
+    correlation_sample_size: int | None = 50000
     max_categorical_levels: int = 100
     max_categorical_ratio: float = 0.50
     outlier_lower_quantile: float = 0.01
@@ -56,6 +57,22 @@ class PropensityConfig:
     input_table_fund_value_column: str = "fund_value"
     input_table_feature_columns: tuple[str, ...] | None = None
     input_table_feature_aggregation: str = "first"
+    activity_table_file: str | None = None
+    activity_table_customer_column: str = "musteri_id"
+    activity_table_date_column: str = "month"
+    activity_ppf_flag_column: str = "ppf_aktif"
+    activity_nf_flag_column: str = "nf_aktif"
+    fund_table_file: str | None = None
+    fund_table_customer_column: str = "musteri_id"
+    fund_table_date_column: str = "month"
+    fund_table_product_flag_column: str = "para_flg"
+    fund_table_value_column: str = "tutar"
+    transaction_table_file: str | None = None
+    transaction_table_customer_column: str = "musteri_id"
+    transaction_table_date_column: str = "month"
+    transaction_table_product_flag_column: str = "ppf_flg"
+    transaction_table_buy_column: str = "alim_tutari"
+    transaction_table_sell_column: str = "satim_tutari"
     inflation_table_file: str | None = None
     inflation_date_column: str = "month"
     inflation_value_column: str = "inflation_rate"
@@ -1313,8 +1330,12 @@ def fit_feature_contract(
     numeric_frame = train_frame[numeric_candidates].replace([np.inf, -np.inf], np.nan).copy()
     numeric_frame = numeric_frame.fillna(numeric_frame.median(numeric_only=True))
     correlation_drops: set[str] = set()
+    correlation_scope = "all_train_rows" if config.correlation_sample_size is None or len(train_frame) <= config.correlation_sample_size else f"train_sample_{config.correlation_sample_size}"
     if len(numeric_candidates) > 1 and config.correlation_threshold < 1.0:
-        correlation = numeric_frame.corr().abs()
+        correlation_frame = numeric_frame
+        if config.correlation_sample_size is not None and len(correlation_frame) > config.correlation_sample_size:
+            correlation_frame = correlation_frame.sample(config.correlation_sample_size, random_state=config.random_seed)
+        correlation = correlation_frame.corr().abs()
         upper = correlation.where(np.triu(np.ones(correlation.shape), k=1).astype(bool))
         correlation_drops = {column for column in upper.columns if (upper[column] > config.correlation_threshold).any()}
     selected_numeric = [column for column in numeric_candidates if column not in correlation_drops]
@@ -1342,12 +1363,12 @@ def fit_feature_contract(
         lower, upper = bounds[column]
         values = pd.to_numeric(train_frame[column], errors="coerce")
         outlier_count = int(((values < lower) | (values > upper)).sum())
-        report_by_feature[column] = {**report_by_feature.get(column, {"feature": column, "dtype": str(train_frame[column].dtype), "missing_pct": train_frame[column].isna().mean(), "unique_count": train_frame[column].nunique(dropna=True), "missing_count": train_frame[column].isna().sum()}), "outlier_lower": lower, "outlier_upper": upper, "train_outlier_count": outlier_count, "action": "retained", "reason": "numeric_clip_and_median_imputation", "encoding": "numeric", "transformation": "quantile_clip_then_median_impute", "outlier_method": f"quantile_clip_{config.outlier_lower_quantile:.2f}_{config.outlier_upper_quantile:.2f}", "correlation_method": f"drop_upper_triangle_over_{config.correlation_threshold:.2f}", "fit_scope": "train_only"}
+        report_by_feature[column] = {**report_by_feature.get(column, {"feature": column, "dtype": str(train_frame[column].dtype), "missing_pct": train_frame[column].isna().mean(), "unique_count": train_frame[column].nunique(dropna=True), "missing_count": train_frame[column].isna().sum()}), "outlier_lower": lower, "outlier_upper": upper, "train_outlier_count": outlier_count, "action": "retained", "reason": "numeric_clip_and_median_imputation", "encoding": "numeric", "transformation": "quantile_clip_then_median_impute", "outlier_method": f"quantile_clip_{config.outlier_lower_quantile:.2f}_{config.outlier_upper_quantile:.2f}", "correlation_method": f"drop_upper_triangle_over_{config.correlation_threshold:.2f};{correlation_scope}", "fit_scope": "train_only"}
     for column in categorical_candidates:
         report_by_feature[column] = {**report_by_feature.get(column, {"feature": column, "dtype": str(train_frame[column].dtype), "missing_pct": train_frame[column].isna().mean(), "unique_count": train_frame[column].nunique(dropna=True), "missing_count": train_frame[column].isna().sum()}), "action": "retained", "reason": "train_categories_only", "encoding": "one_hot", "transformation": "train_categories_only_one_hot", "outlier_method": "not_applicable", "correlation_method": "numeric_only_correlation_filter", "fit_scope": "train_only"}
     for column in correlation_drops:
         report_by_feature[column] = {**report_by_feature.get(column, {"feature": column}), "action": "eliminated", "reason": f"high_correlation>{config.correlation_threshold:.2f}", "encoding": "none", "transformation": "eliminated", "outlier_method": "not_applicable", "correlation_method": f"drop_upper_triangle_over_{config.correlation_threshold:.2f}", "fit_scope": "train_only"}
-    contract = {"numeric": selected_numeric, "categorical": categorical_candidates, "bounds": bounds, "medians": medians, "categories": categories, "missing_indicators": [column for column in selected if config.add_missing_indicators and train_frame[column].isna().any()]}
+    contract = {"numeric": selected_numeric, "categorical": categorical_candidates, "bounds": bounds, "medians": medians, "categories": categories, "missing_indicators": [column for column in selected if config.add_missing_indicators and train_frame[column].isna().any()], "correlation_scope": correlation_scope}
     return contract, pd.DataFrame(list(report_by_feature.values())).sort_values("feature").reset_index(drop=True)
 
 
@@ -1700,6 +1721,90 @@ def _read_source_file(path: Path) -> pd.DataFrame:
     raise ValueError(f"Desteklenmeyen source formatı: {path.suffix}")
 
 
+def _read_configured_table(root: Path, filename: str, name: str) -> pd.DataFrame:
+    path = root / filename
+    if not path.exists():
+        raise FileNotFoundError(f"{name} tablosu bulunamadı: {path}")
+    return _read_source_file(path)
+
+
+def _load_manual_tables(root: Path, config: PropensityConfig) -> SourceBundle:
+    """Load the user-owned monthly input, activity, fund and transaction tables."""
+
+    required_files = {
+        "input_table_file": config.input_table_file,
+        "activity_table_file": config.activity_table_file,
+        "fund_table_file": config.fund_table_file,
+        "transaction_table_file": config.transaction_table_file,
+        "inflation_table_file": config.inflation_table_file,
+    }
+    missing_files = [name for name, value in required_files.items() if not value]
+    if missing_files:
+        raise ValueError(f"Manuel tablo dosyaları config'te eksik: {missing_files}")
+
+    input_source = _read_configured_table(root, config.input_table_file, "input")
+    input_customer = config.input_table_customer_column
+    input_date = config.input_table_date_column
+    _require_columns(input_source, [input_customer, input_date], "input")
+    input_source = input_source.rename(columns={input_customer: "musteri_id", input_date: "month"})
+    input_source["musteri_id"] = input_source["musteri_id"].astype(str)
+    input_source["month"] = _month_start(input_source["month"])
+    if input_source["month"].isna().any():
+        raise ValueError("input tarih kolonunda parse edilemeyen değer var")
+    customers = input_source[["musteri_id"] + (["segment"] if "segment" in input_source.columns else [])].drop_duplicates("musteri_id")
+    if "segment" not in customers:
+        customers["segment"] = "unknown"
+
+    activity_source = _read_configured_table(root, config.activity_table_file, "aktivite")
+    activity_customer = config.activity_table_customer_column
+    activity_date = config.activity_table_date_column
+    _require_columns(activity_source, [activity_customer, activity_date, config.activity_ppf_flag_column, config.activity_nf_flag_column], "aktivite")
+    activity = activity_source.rename(columns={activity_customer: "musteri_id", activity_date: "month", config.activity_ppf_flag_column: "ppf_aktif", config.activity_nf_flag_column: "nf_aktif"})
+    activity = activity[["musteri_id", "month", "ppf_aktif", "nf_aktif"]].copy()
+    activity["musteri_id"] = activity["musteri_id"].astype(str)
+    activity["month"] = _month_start(activity["month"])
+
+    fund_source = _read_configured_table(root, config.fund_table_file, "fon tutar")
+    fund_customer = config.fund_table_customer_column
+    fund_date = config.fund_table_date_column
+    _require_columns(fund_source, [fund_customer, fund_date, config.fund_table_product_flag_column, config.fund_table_value_column], "fon tutar")
+    fund = fund_source.rename(columns={fund_customer: "musteri_id", fund_date: "month", config.fund_table_product_flag_column: "para_flg", config.fund_table_value_column: "fund_value"})
+    fund = fund[["musteri_id", "month", "para_flg", "fund_value"]].copy()
+    fund["musteri_id"] = fund["musteri_id"].astype(str)
+    fund["month"] = _month_start(fund["month"])
+    fund["product_class"] = np.where(pd.to_numeric(fund["para_flg"], errors="coerce").eq(1), "para_piyasasi", "nitelikli")
+    fund["fund_value"] = pd.to_numeric(fund["fund_value"], errors="coerce").fillna(0.0)
+    fund = fund.groupby(["musteri_id", "month", "product_class"], as_index=False)["fund_value"].sum()
+
+    transaction_source = _read_configured_table(root, config.transaction_table_file, "alım satım")
+    transaction_customer = config.transaction_table_customer_column
+    transaction_date = config.transaction_table_date_column
+    _require_columns(transaction_source, [transaction_customer, transaction_date, config.transaction_table_product_flag_column, config.transaction_table_buy_column, config.transaction_table_sell_column], "alım satım")
+    transactions = transaction_source.rename(columns={transaction_customer: "musteri_id", transaction_date: "month", config.transaction_table_product_flag_column: "ppf_flg", config.transaction_table_buy_column: "buy_amount", config.transaction_table_sell_column: "sell_amount"})
+    transactions = transactions[["musteri_id", "month", "ppf_flg", "buy_amount", "sell_amount"]].copy()
+    transactions["musteri_id"] = transactions["musteri_id"].astype(str)
+    transactions["month"] = _month_start(transactions["month"])
+    transactions["product_class"] = np.where(pd.to_numeric(transactions["ppf_flg"], errors="coerce").eq(1), "para_piyasasi", "nitelikli")
+    transactions["buy_amount"] = pd.to_numeric(transactions["buy_amount"], errors="coerce").fillna(0.0)
+    transactions["sell_amount"] = pd.to_numeric(transactions["sell_amount"], errors="coerce").fillna(0.0)
+    transactions = transactions.groupby(["musteri_id", "month", "product_class"], as_index=False)[["buy_amount", "sell_amount"]].sum()
+    flows = fund.merge(transactions, on=["musteri_id", "month", "product_class"], how="outer", validate="one_to_one")
+    for column in ("fund_value", "buy_amount", "sell_amount"):
+        flows[column] = pd.to_numeric(flows[column], errors="coerce").fillna(0.0)
+
+    reserved = {input_customer, input_date, "musteri_id", "month", "segment"}
+    feature_columns = list(config.input_table_feature_columns) if config.input_table_feature_columns else [column for column in input_source.columns if column not in reserved]
+    feature_columns = [column for column in feature_columns if column in input_source.columns]
+    monthly_features = input_source[["musteri_id", "month", *feature_columns]].copy()
+    monthly_features = monthly_features.groupby(["musteri_id", "month"], as_index=False)[feature_columns].first() if feature_columns else pd.DataFrame(columns=["musteri_id", "month"])
+    inflation = pd.DataFrame()
+    if config.inflation_table_file:
+        inflation_source = _read_configured_table(root, config.inflation_table_file, "enflasyon")
+        _require_columns(inflation_source, [config.inflation_date_column, config.inflation_value_column], "enflasyon")
+        inflation = inflation_source.rename(columns={config.inflation_date_column: "month", config.inflation_value_column: "inflation_rate"})[["month", "inflation_rate"]]
+    return adapt_source_bundle(SourceBundle(customers, activity, flows, monthly_features, inflation))
+
+
 def _load_wide_input_table(root: Path, config: PropensityConfig) -> SourceBundle:
     """Convert one wide customer-month table into leakage-safe source tables."""
 
@@ -1777,6 +1882,8 @@ def load_bundle_from_directory(data_root: str | Path, config: PropensityConfig |
     """Load either a configured wide table or normalized CSV/Parquet sources."""
 
     root = Path(data_root)
+    if config is not None and config.activity_table_file:
+        return _load_manual_tables(root, config)
     if config is not None and config.input_table_file:
         return _load_wide_input_table(root, config)
 
