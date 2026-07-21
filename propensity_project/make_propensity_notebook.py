@@ -23,6 +23,72 @@ def build_notebook() -> None:
         "language_info": {"name": "python", "version": "3.11"},
     })
     notebook.cells = [
+        _cell("markdown", "## 0. Chapter - Ornek Veri ile Run\n\nBu bolum, notebook'u denemek icin 150 musterili ve 2025.09-2026.06 donemini kapsayan bes manuel tabloyu `propensity_example_data` klasorune yazar. Kod hucresini calistirdiktan sonra diger hucresileri sirayla calistirabilirsiniz. `PROPENSITY_DATA_ROOT` ortam degiskeni zaten tanimliysa mevcut veri yolu korunur.", "markdown", "cell-00"),
+        _cell("code", """import os
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+EXAMPLE_DATA_ROOT = Path.cwd() / "propensity_example_data"
+EXAMPLE_DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+rng = np.random.default_rng(42)
+example_months = pd.period_range("2025-09", "2026-06", freq="M").astype(str)
+example_customers = pd.DataFrame({
+    "musteri_id": [f"M{i:04d}" for i in range(1, 151)],
+})
+example_customers["segment"] = ((np.arange(len(example_customers)) % 5) + 1).astype(int)
+example_customers["gelir"] = rng.lognormal(mean=10.4, sigma=0.45, size=len(example_customers)).round(2)
+example_customers["risk_skoru"] = rng.normal(loc=650, scale=55, size=len(example_customers)).clip(350, 850).round(1)
+
+example_panel = pd.MultiIndex.from_product(
+    [example_customers["musteri_id"], example_months],
+    names=["musteri_id", "month"],
+).to_frame(index=False).merge(example_customers, on="musteri_id", how="left")
+example_panel["month_index"] = example_panel["month"].map({month: index for index, month in enumerate(example_months)})
+segment_signal = example_panel["segment"].isin([2, 4]).astype(float)
+example_panel["ppf_aktif"] = (rng.random(len(example_panel)) < (0.52 + 0.12 * segment_signal)).astype(int)
+example_panel["nf_aktif"] = (rng.random(len(example_panel)) < (0.38 + 0.10 * (1 - segment_signal))).astype(int)
+
+input_table = example_panel[["musteri_id", "month", "segment", "gelir", "risk_skoru"]]
+activity_table = example_panel[["musteri_id", "month", "ppf_aktif", "nf_aktif"]]
+
+fund_table = example_panel[["musteri_id", "month"]].loc[example_panel.index.repeat(2)].reset_index(drop=True)
+fund_table["para_flg"] = np.tile([1, 0], len(example_panel))
+fund_table["tutar"] = np.where(
+    fund_table["para_flg"].eq(1),
+    rng.gamma(shape=3.0, scale=18000, size=len(fund_table)),
+    rng.gamma(shape=2.5, scale=12000, size=len(fund_table)),
+).round(2)
+
+transaction_table = fund_table[["musteri_id", "month", "para_flg"]].rename(columns={"para_flg": "ppf_flg"})
+transaction_table["alim_tutari"] = rng.gamma(shape=1.8, scale=900, size=len(transaction_table)).round(2)
+transaction_table["satim_tutari"] = rng.gamma(shape=1.4, scale=650, size=len(transaction_table)).round(2)
+transaction_table.loc[transaction_table["month"].eq("2026-06"), "alim_tutari"] *= 1.8
+
+inflation_table = pd.DataFrame({
+    "month": example_months,
+    "inflation_rate": [0.025, 0.028, 0.030, 0.027, 0.024, 0.022, 0.021, 0.020, 0.019, 0.018],
+})
+
+for filename, frame in {
+    "input.csv": input_table,
+    "aktiflik.csv": activity_table,
+    "fon_tutar.csv": fund_table,
+    "alim_satim.csv": transaction_table,
+    "enflasyon.csv": inflation_table,
+}.items():
+    frame.to_csv(EXAMPLE_DATA_ROOT / filename, index=False)
+
+os.environ.setdefault("PROPENSITY_DATA_ROOT", str(EXAMPLE_DATA_ROOT))
+print("Ornek veri klasoru:", EXAMPLE_DATA_ROOT.resolve())
+print("Olusturulan tablolar:", ", ".join(sorted(path.name for path in EXAMPLE_DATA_ROOT.glob("*.csv"))))
+print("Ornek satir sayilari:")
+display(pd.DataFrame({
+    "table": ["input", "activity", "fund", "transaction", "inflation"],
+    "rows": [len(input_table), len(activity_table), len(fund_table), len(transaction_table), len(inflation_table)],
+}))""", "python", "cell-00-code"),
         _cell("markdown", """# Fon Newsell ve Upsell Propensity
 
 Bu notebook yalnizca bes uygulama adimindan olusur: **data load**, **preprocess**, **feature engineering**, **modelling** ve **reporting**.
