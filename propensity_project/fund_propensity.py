@@ -30,13 +30,20 @@ class PropensityConfig:
     random_seed: int = 42
     campaign_capacity: int | None = None
     missing_threshold: float = 0.95
+    enable_missing_filter: bool = True
+    enable_constant_filter: bool = True
     correlation_threshold: float = 0.95
     correlation_sample_size: int | None = 50000
+    enable_correlation_filter: bool = True
     max_categorical_levels: int = 100
     max_categorical_ratio: float = 0.50
+    enable_categorical_filter: bool = True
     outlier_lower_quantile: float = 0.01
     outlier_upper_quantile: float = 0.99
+    enable_outlier_clipping: bool = True
     add_missing_indicators: bool = True
+    amount_group_count: int = 10
+    amount_group_column: str = "fund_value_real"
     segment_column: str = "segment"
     segment_values: tuple[Any, ...] | None = None
     test_months: int = 1
@@ -615,15 +622,16 @@ def build_model_performance_summary(metrics: pd.DataFrame) -> pd.DataFrame:
     """Aggregate technical model metrics for notebook and Excel charts."""
 
     if metrics is None or metrics.empty:
-        return pd.DataFrame(columns=["evaluation_stage", "split", "chart_label", "model_count", "pr_auc_mean", "roc_auc_mean", "brier_mean", "prevalence_mean", "pr_auc_lift_mean"])
+        return pd.DataFrame(columns=["evaluation_stage", "split", "chart_label", "model_count", "pr_auc_mean", "roc_auc_mean", "gini_mean", "brier_mean", "prevalence_mean", "pr_auc_lift_mean"])
     usable = metrics[metrics["split"].isin(["train", "test", "oot"])].copy()
     if usable.empty:
-        return pd.DataFrame(columns=["evaluation_stage", "split", "chart_label", "model_count", "pr_auc_mean", "roc_auc_mean", "brier_mean", "prevalence_mean", "pr_auc_lift_mean"])
+        return pd.DataFrame(columns=["evaluation_stage", "split", "chart_label", "model_count", "pr_auc_mean", "roc_auc_mean", "gini_mean", "brier_mean", "prevalence_mean", "pr_auc_lift_mean"])
     group_columns = [column for column in ["segment", "evaluation_stage", "split"] if column in usable.columns]
     summary = usable.groupby(group_columns, dropna=False).agg(
         model_count=("model_key", "nunique"),
         pr_auc_mean=("pr_auc", "mean"),
         roc_auc_mean=("roc_auc", "mean"),
+        gini_mean=("gini", "mean"),
         brier_mean=("brier", "mean"),
         prevalence_mean=("prevalence", "mean"),
         positive_count=("positive_count", "sum"),
@@ -634,9 +642,49 @@ def build_model_performance_summary(metrics: pd.DataFrame) -> pd.DataFrame:
     if "segment" in summary:
         summary["chart_label"] = "S" + summary["segment"].astype(str) + " / "
     summary["chart_label"] = summary["chart_label"] + summary["evaluation_stage"].astype(str) + " / " + summary["split"].astype(str)
-    columns = ["segment", "evaluation_stage", "split", "chart_label", "model_count", "pr_auc_mean", "roc_auc_mean", "brier_mean", "prevalence_mean", "pr_auc_lift_mean", "positive_count", "sample_count"]
+    columns = ["segment", "evaluation_stage", "split", "chart_label", "model_count", "pr_auc_mean", "roc_auc_mean", "gini_mean", "brier_mean", "prevalence_mean", "pr_auc_lift_mean", "positive_count", "sample_count"]
     columns = [column for column in columns if column in summary.columns]
     return summary[columns].sort_values([column for column in ["segment", "evaluation_stage", "split"] if column in summary.columns]).reset_index(drop=True)
+
+
+def build_amount_group_performance(
+    oot_scores: pd.DataFrame | None,
+    targets: pd.DataFrame,
+    features: pd.DataFrame,
+    config: PropensityConfig,
+) -> pd.DataFrame:
+    """Evaluate OOT ranking separately for equal-count fund-value groups per segment."""
+
+    lift_columns = [f"lift_at_{fraction * 100:g}pct".replace(".", "_") for fraction in config.top_k]
+    columns = ["segment", "model_key", "model_type", "product_class", "x_window", "y_window", "r_threshold", "amount_group", "amount_group_count", "amount_lower", "amount_upper", "sample_count", "positive_count", "prevalence", "pr_auc", "roc_auc", "gini", *lift_columns]
+    if oot_scores is None or oot_scores.empty or config.amount_group_count < 2:
+        return pd.DataFrame(columns=columns)
+    required_score = {"musteri_id", "anchor_month", "product_class", "model_key", "probability"}
+    amount_column = config.amount_group_column
+    if amount_column not in features.columns:
+        amount_column = next((column for column in ["fund_value_real", "fund_value", "fund_value_log1p"] if column in features.columns), "")
+    if not required_score.issubset(oot_scores.columns) or not amount_column:
+        return pd.DataFrame(columns=columns)
+    key_columns = ["musteri_id", "anchor_month", "product_class"]
+    model_columns = [column for column in ["model_type", "x_window", "y_window", "r_threshold"] if column in oot_scores.columns and column in targets.columns]
+    target_columns = key_columns + model_columns + ["target"]
+    amount_columns = key_columns + [config.segment_column, amount_column]
+    score_columns = list(dict.fromkeys(list(required_score) + model_columns))
+    scored = oot_scores[score_columns].merge(targets[target_columns], on=key_columns + model_columns, how="left", validate="many_to_one")
+    scored = scored.merge(features[amount_columns], on=key_columns, how="left", validate="many_to_one")
+    scored = scored.dropna(subset=["target", amount_column, config.segment_column])
+    if scored.empty:
+        return pd.DataFrame(columns=columns)
+    group_keys = [column for column in [config.segment_column, "model_key", "model_type", "product_class", "x_window", "y_window", "r_threshold"] if column in scored.columns]
+    rows: list[dict[str, Any]] = []
+    for group_key, group in scored.groupby(group_keys, dropna=False):
+        group = group.copy()
+        group["amount_group"] = pd.qcut(group[amount_column].rank(method="first"), q=min(config.amount_group_count, len(group)), labels=False, duplicates="drop") + 1
+        values = dict(zip(group_keys, group_key if isinstance(group_key, tuple) else (group_key,)))
+        for amount_group, amount_slice in group.groupby("amount_group", dropna=False):
+            evaluated = evaluate_predictions(amount_slice["target"], amount_slice["probability"], config.top_k)
+            rows.append({**values, "amount_group": int(amount_group), "amount_group_count": int(len(amount_slice)), "amount_lower": float(amount_slice[amount_column].min()), "amount_upper": float(amount_slice[amount_column].max()), "sample_count": evaluated["sample_count"], "positive_count": evaluated["positive_count"], "prevalence": evaluated["prevalence"], "pr_auc": evaluated["pr_auc"], "roc_auc": evaluated["roc_auc"], "gini": 2 * evaluated["roc_auc"] - 1 if pd.notna(evaluated["roc_auc"]) else np.nan, **{column: evaluated.get(column, np.nan) for column in lift_columns}})
+    return pd.DataFrame(rows, columns=columns).sort_values(group_keys + ["amount_group"]).reset_index(drop=True)
 
 
 def build_model_status_summary(metrics: pd.DataFrame, target_quality: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -829,6 +877,7 @@ def build_pipeline_audit(
     feature_engineering_audit: pd.DataFrame | None = None,
     inflation_audit: pd.DataFrame | None = None,
     performance_summary: pd.DataFrame | None = None,
+    amount_group_performance: pd.DataFrame | None = None,
     general_summary: pd.DataFrame | None = None,
     overfit_audit: pd.DataFrame | None = None,
     runtime_summary: pd.DataFrame | None = None,
@@ -973,6 +1022,7 @@ def build_pipeline_audit(
         "optuna_trials": optuna_trials if optuna_trials is not None else pd.DataFrame(),
         "oot_scores": oot_scores if oot_scores is not None else pd.DataFrame(),
         "campaign_scores": campaign_scores if campaign_scores is not None else pd.DataFrame(),
+        "amount_group_performance": amount_group_performance if amount_group_performance is not None else pd.DataFrame(),
         "performance_summary": performance_summary,
         "general_summary": general_summary,
         "overfit_audit": overfit_audit,
@@ -1004,6 +1054,7 @@ def write_pipeline_excel(audit_tables: dict[str, pd.DataFrame], output_path: str
         "optuna_trials": "12_Optuna_Trials",
         "oot_scores": "13_OOT_Scores",
         "campaign_scores": "14_Campaign_Scores",
+        "amount_group_performance": "15_Amount_Group_Performance",
         "inflation_audit": "15_Inflation_Audit",
         "performance_summary": "16_Performance_Summary",
         "general_summary": "17_General_Summary",
@@ -1025,10 +1076,12 @@ def write_pipeline_excel(audit_tables: dict[str, pd.DataFrame], output_path: str
     sheet_names["optuna_trials"] = "13_Optuna_Trials"
     sheet_names["oot_scores"] = "14_OOT_Scores"
     sheet_names["campaign_scores"] = "15_Campaign_Scores"
-    sheet_names["inflation_audit"] = "16_Inflation_Audit"
-    sheet_names["performance_summary"] = "17_Performance_Summary"
-    sheet_names["general_summary"] = "18_General_Summary"
-    sheet_names["overfit_audit"] = "19_Overfit_Audit"
+    sheet_names["amount_group_performance"] = "16_Amount_Group_Performance"
+    sheet_names["inflation_audit"] = "17_Inflation_Audit"
+    sheet_names["performance_summary"] = "18_Performance_Summary"
+    sheet_names["general_summary"] = "19_General_Summary"
+    sheet_names["overfit_audit"] = "20_Overfit_Audit"
+    sheet_names["model_status_summary"] = "21_Model_Status_Summary"
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         for key, sheet_name in sheet_names.items():
             frame = audit_tables.get(key, pd.DataFrame())
@@ -1158,6 +1211,7 @@ def evaluate_predictions(y_true: pd.Series, probability: np.ndarray, top_k: Iter
         "roc_auc": _safe_metric(roc_auc_score, y_array, probability),
         "brier": _safe_metric(brier_score_loss, y_array, probability),
     }
+    metrics["gini"] = 2 * metrics["roc_auc"] - 1 if pd.notna(metrics["roc_auc"]) else np.nan
     for fraction in top_k:
         count = max(1, int(np.ceil(len(y_array) * fraction)))
         selected = y_array[order[:count]]
@@ -1313,16 +1367,16 @@ def fit_feature_contract(
         missing_pct = missing_count / row_count
         unique_count = int(series.nunique(dropna=True))
         base = {"feature": column, "dtype": str(series.dtype), "missing_pct": missing_pct, "unique_count": unique_count, "missing_count": missing_count, "outlier_lower": np.nan, "outlier_upper": np.nan, "train_outlier_count": 0, "encoding": "none", "transformation": "none", "outlier_method": "not_applicable", "correlation_method": "not_applicable", "fit_scope": "train_only"}
-        if missing_pct > config.missing_threshold:
+        if config.enable_missing_filter and missing_pct > config.missing_threshold:
             report.append({**base, "action": "eliminated", "reason": f"missing_pct>{config.missing_threshold:.2f}"})
             continue
-        if unique_count <= 1:
+        if config.enable_constant_filter and unique_count <= 1:
             report.append({**base, "action": "eliminated", "reason": "constant_or_empty"})
             continue
         if pd.api.types.is_numeric_dtype(series):
             numeric_candidates.append(column)
         else:
-            if unique_count > config.max_categorical_levels or unique_count / row_count > config.max_categorical_ratio:
+            if config.enable_categorical_filter and (unique_count > config.max_categorical_levels or unique_count / row_count > config.max_categorical_ratio):
                 report.append({**base, "action": "eliminated", "reason": "categorical_cardinality_too_high"})
                 continue
             categorical_candidates.append(column)
@@ -1330,8 +1384,8 @@ def fit_feature_contract(
     numeric_frame = train_frame[numeric_candidates].replace([np.inf, -np.inf], np.nan).copy()
     numeric_frame = numeric_frame.fillna(numeric_frame.median(numeric_only=True))
     correlation_drops: set[str] = set()
-    correlation_scope = "all_train_rows" if config.correlation_sample_size is None or len(train_frame) <= config.correlation_sample_size else f"train_sample_{config.correlation_sample_size}"
-    if len(numeric_candidates) > 1 and config.correlation_threshold < 1.0:
+    correlation_scope = "disabled" if not config.enable_correlation_filter else ("all_train_rows" if config.correlation_sample_size is None or len(train_frame) <= config.correlation_sample_size else f"train_sample_{config.correlation_sample_size}")
+    if config.enable_correlation_filter and len(numeric_candidates) > 1 and config.correlation_threshold < 1.0:
         correlation_frame = numeric_frame
         if config.correlation_sample_size is not None and len(correlation_frame) > config.correlation_sample_size:
             correlation_frame = correlation_frame.sample(config.correlation_sample_size, random_state=config.random_seed)
@@ -1350,7 +1404,7 @@ def fit_feature_contract(
         upper = float(values.quantile(config.outlier_upper_quantile)) if values.notna().any() else median
         if lower > upper:
             lower, upper = upper, lower
-        bounds[column] = (lower, upper)
+        bounds[column] = (lower, upper) if config.enable_outlier_clipping else (-np.inf, np.inf)
         medians[column] = median
     for column in categorical_candidates:
         categories[column] = sorted(train_frame[column].dropna().astype(str).unique().tolist())
@@ -1362,10 +1416,10 @@ def fit_feature_contract(
     for column in selected_numeric:
         lower, upper = bounds[column]
         values = pd.to_numeric(train_frame[column], errors="coerce")
-        outlier_count = int(((values < lower) | (values > upper)).sum())
-        report_by_feature[column] = {**report_by_feature.get(column, {"feature": column, "dtype": str(train_frame[column].dtype), "missing_pct": train_frame[column].isna().mean(), "unique_count": train_frame[column].nunique(dropna=True), "missing_count": train_frame[column].isna().sum()}), "outlier_lower": lower, "outlier_upper": upper, "train_outlier_count": outlier_count, "action": "retained", "reason": "numeric_clip_and_median_imputation", "encoding": "numeric", "transformation": "quantile_clip_then_median_impute", "outlier_method": f"quantile_clip_{config.outlier_lower_quantile:.2f}_{config.outlier_upper_quantile:.2f}", "correlation_method": f"drop_upper_triangle_over_{config.correlation_threshold:.2f};{correlation_scope}", "fit_scope": "train_only"}
+        outlier_count = int(((values < lower) | (values > upper)).sum()) if config.enable_outlier_clipping else 0
+        report_by_feature[column] = {**report_by_feature.get(column, {"feature": column, "dtype": str(train_frame[column].dtype), "missing_pct": train_frame[column].isna().mean(), "unique_count": train_frame[column].nunique(dropna=True), "missing_count": train_frame[column].isna().sum()}), "outlier_lower": lower, "outlier_upper": upper, "train_outlier_count": outlier_count, "action": "retained", "reason": "numeric_clip_and_median_imputation" if config.enable_outlier_clipping else "numeric_median_imputation", "encoding": "numeric", "transformation": "quantile_clip_then_median_impute" if config.enable_outlier_clipping else "median_impute", "outlier_method": f"quantile_clip_{config.outlier_lower_quantile:.2f}_{config.outlier_upper_quantile:.2f}" if config.enable_outlier_clipping else "disabled", "correlation_method": f"drop_upper_triangle_over_{config.correlation_threshold:.2f};{correlation_scope}", "fit_scope": "train_only"}
     for column in categorical_candidates:
-        report_by_feature[column] = {**report_by_feature.get(column, {"feature": column, "dtype": str(train_frame[column].dtype), "missing_pct": train_frame[column].isna().mean(), "unique_count": train_frame[column].nunique(dropna=True), "missing_count": train_frame[column].isna().sum()}), "action": "retained", "reason": "train_categories_only", "encoding": "one_hot", "transformation": "train_categories_only_one_hot", "outlier_method": "not_applicable", "correlation_method": "numeric_only_correlation_filter", "fit_scope": "train_only"}
+        report_by_feature[column] = {**report_by_feature.get(column, {"feature": column, "dtype": str(train_frame[column].dtype), "missing_pct": train_frame[column].isna().mean(), "unique_count": train_frame[column].nunique(dropna=True), "missing_count": train_frame[column].isna().sum()}), "action": "retained", "reason": "train_categories_only", "encoding": "one_hot", "transformation": "train_categories_only_one_hot", "outlier_method": "not_applicable", "correlation_method": "numeric_only_correlation_filter" if config.enable_correlation_filter else "disabled", "fit_scope": "train_only"}
     for column in correlation_drops:
         report_by_feature[column] = {**report_by_feature.get(column, {"feature": column}), "action": "eliminated", "reason": f"high_correlation>{config.correlation_threshold:.2f}", "encoding": "none", "transformation": "eliminated", "outlier_method": "not_applicable", "correlation_method": f"drop_upper_triangle_over_{config.correlation_threshold:.2f}", "fit_scope": "train_only"}
     contract = {"numeric": selected_numeric, "categorical": categorical_candidates, "bounds": bounds, "medians": medians, "categories": categories, "missing_indicators": [column for column in selected if config.add_missing_indicators and train_frame[column].isna().any()], "correlation_scope": correlation_scope}

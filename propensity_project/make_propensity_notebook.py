@@ -111,6 +111,7 @@ from fund_propensity import (
     build_inflation_audit,
     build_model_performance_summary,
     build_model_status_summary,
+    build_amount_group_performance,
     build_overfit_audit,
     build_runtime_summary,
     build_feature_table,
@@ -162,13 +163,20 @@ RARE_EVENT_RATE_THRESHOLD = 0.01
 CAMPAIGN_CAPACITY = 1000
 RANDOM_SEED = 42
 MISSING_THRESHOLD = 0.95
+ENABLE_MISSING_FILTER = True
+ENABLE_CONSTANT_FILTER = True
 CORRELATION_THRESHOLD = 0.95
 CORRELATION_SAMPLE_SIZE = 50000
+ENABLE_CORRELATION_FILTER = True
 MAX_CATEGORICAL_LEVELS = 100
 MAX_CATEGORICAL_RATIO = 0.50
+ENABLE_CATEGORICAL_FILTER = True
 OUTLIER_LOWER_QUANTILE = 0.01
 OUTLIER_UPPER_QUANTILE = 0.99
+ENABLE_OUTLIER_CLIPPING = True
 ADD_MISSING_INDICATORS = True
+AMOUNT_GROUP_COUNT = 10
+AMOUNT_GROUP_COLUMN = "fund_value_real"
 INFLATION_REFERENCE_MONTH = None
 INFLATION_ADJUST_ALL_CONTINUOUS = True
 INPUT_TABLE_CUSTOMER_COLUMN = "musteri_id"
@@ -210,13 +218,20 @@ CONFIG = PropensityConfig(
     random_seed=RANDOM_SEED,
     campaign_capacity=CAMPAIGN_CAPACITY,
     missing_threshold=MISSING_THRESHOLD,
+    enable_missing_filter=ENABLE_MISSING_FILTER,
+    enable_constant_filter=ENABLE_CONSTANT_FILTER,
     correlation_threshold=CORRELATION_THRESHOLD,
     correlation_sample_size=CORRELATION_SAMPLE_SIZE,
+    enable_correlation_filter=ENABLE_CORRELATION_FILTER,
     max_categorical_levels=MAX_CATEGORICAL_LEVELS,
     max_categorical_ratio=MAX_CATEGORICAL_RATIO,
+    enable_categorical_filter=ENABLE_CATEGORICAL_FILTER,
     outlier_lower_quantile=OUTLIER_LOWER_QUANTILE,
     outlier_upper_quantile=OUTLIER_UPPER_QUANTILE,
+    enable_outlier_clipping=ENABLE_OUTLIER_CLIPPING,
     add_missing_indicators=ADD_MISSING_INDICATORS,
+    amount_group_count=AMOUNT_GROUP_COUNT,
+    amount_group_column=AMOUNT_GROUP_COLUMN,
     inflation_reference_month=INFLATION_REFERENCE_MONTH,
     inflation_adjust_all_continuous=INFLATION_ADJUST_ALL_CONTINUOUS,
     input_table_file=INPUT_TABLE_FILE,
@@ -362,6 +377,8 @@ print("Feature engineering transformation and segment distribution audit:")
 display(FEATURE_ENGINEERING_AUDIT)
 print("Train-only model preprocessing audit:")
 display(MODEL_FEATURE_AUDIT)
+print("Optional preprocessing controls:")
+display(pd.DataFrame({"control": ["missing_filter", "constant_filter", "categorical_filter", "outlier_clipping", "correlation_filter", "missing_indicators"], "enabled": [CONFIG.enable_missing_filter, CONFIG.enable_constant_filter, CONFIG.enable_categorical_filter, CONFIG.enable_outlier_clipping, CONFIG.enable_correlation_filter, CONFIG.add_missing_indicators]}))
 print("Elimination and trimming summary:")
 display(MODEL_FEATURE_AUDIT.groupby(["action", "outlier_method"], dropna=False).agg(
     feature_count=("feature", "nunique"), train_outlier_count=("train_outlier_count", "sum")
@@ -378,6 +395,7 @@ else:
     campaign_scores = pd.DataFrame()
 
 PERFORMANCE_SUMMARY = build_model_performance_summary(metrics)
+AMOUNT_GROUP_PERFORMANCE = build_amount_group_performance(oot_scores, targets, features, CONFIG)
 MODEL_STATUS_SUMMARY = build_model_status_summary(metrics, TARGET_QUALITY)
 OVERFIT_AUDIT = build_overfit_audit(metrics)
 GENERAL_SUMMARY = build_general_summary(
@@ -407,6 +425,8 @@ print("Overfit and rare-event performance audit:")
 display(OVERFIT_AUDIT)
 print("Segment/model status summary:")
 display(MODEL_STATUS_SUMMARY)
+print("Segment içi tutar grubu performansı:")
+display(AMOUNT_GROUP_PERFORMANCE)
 CHART_PATHS = save_performance_charts(FIGURES, OUTPUT_DIR)
 
 audit_tables = build_pipeline_audit(
@@ -425,6 +445,7 @@ audit_tables = build_pipeline_audit(
     feature_engineering_audit=FEATURE_ENGINEERING_AUDIT,
     inflation_audit=INFLATION_AUDIT,
     performance_summary=PERFORMANCE_SUMMARY,
+    amount_group_performance=AMOUNT_GROUP_PERFORMANCE,
     general_summary=GENERAL_SUMMARY,
     overfit_audit=OVERFIT_AUDIT,
     runtime_summary=RUNTIME_SUMMARY,
