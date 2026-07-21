@@ -44,6 +44,9 @@ class PropensityConfig:
     add_missing_indicators: bool = True
     amount_group_count: int = 10
     amount_group_column: str = "fund_value_real"
+    elbow_enabled: bool = True
+    elbow_min_features: int = 5
+    elbow_max_features: int = 50
     segment_column: str = "segment"
     segment_values: tuple[Any, ...] | None = None
     test_months: int = 1
@@ -687,6 +690,68 @@ def build_amount_group_performance(
     return pd.DataFrame(rows, columns=columns).sort_values(group_keys + ["amount_group"]).reset_index(drop=True)
 
 
+def build_feature_elbow_analysis(
+    metrics: pd.DataFrame | None,
+    model_registry: dict[str, Any] | None,
+    config: PropensityConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Select the best OOT model per segment and find its importance elbow up to 50 features."""
+
+    elbow_columns = ["segment", "model_key", "model_name", "model_type", "product_class", "x_window", "y_window", "r_threshold", "feature_count", "cumulative_importance", "marginal_importance", "elbow_distance", "selected_feature_count", "elbow_selected"]
+    ranking_columns = ["segment", "model_key", "feature_rank", "feature", "importance", "importance_share", "cumulative_importance", "selected_by_elbow"]
+    if not config.elbow_enabled or metrics is None or metrics.empty or not model_registry:
+        return pd.DataFrame(columns=elbow_columns), pd.DataFrame(columns=ranking_columns)
+    usable = metrics[(metrics.get("split", pd.Series(dtype=str)).eq("oot")) & metrics.get("model_key", pd.Series(dtype=str)).isin(model_registry)].copy()
+    if usable.empty or "pr_auc" not in usable.columns:
+        return pd.DataFrame(columns=elbow_columns), pd.DataFrame(columns=ranking_columns)
+    best_rows = usable.sort_values(["segment", "pr_auc", "roc_auc"], ascending=[True, False, False]).drop_duplicates("segment")
+    elbow_rows: list[dict[str, Any]] = []
+    ranking_rows: list[dict[str, Any]] = []
+    max_features = min(50, max(1, int(config.elbow_max_features)))
+    min_features = min(max_features, max(1, int(config.elbow_min_features)))
+    for best in best_rows.itertuples(index=False):
+        bundle = model_registry.get(best.model_key, {})
+        model = bundle.get("model")
+        encoded_columns = bundle.get("encoded_columns", [])
+        importances = getattr(model, "feature_importances_", None)
+        if importances is None or not encoded_columns:
+            continue
+        importance_frame = pd.DataFrame({"feature": encoded_columns, "importance": np.asarray(importances, dtype=float)})
+        importance_frame = importance_frame.sort_values(["importance", "feature"], ascending=[False, True]).reset_index(drop=True)
+        total = float(importance_frame["importance"].sum())
+        importance_frame["importance_share"] = importance_frame["importance"] / total if total > 0 else 0.0
+        importance_frame["cumulative_importance"] = importance_frame["importance_share"].cumsum()
+        candidate_max = min(max_features, len(importance_frame))
+        candidates = list(range(min_features, candidate_max + 1)) if candidate_max >= min_features else [candidate_max]
+        curve = importance_frame.iloc[np.array(candidates) - 1][["cumulative_importance"]].to_numpy().ravel()
+        if len(candidates) > 1 and curve[-1] != curve[0]:
+            x = (np.asarray(candidates) - candidates[0]) / max(candidates[-1] - candidates[0], 1)
+            y = (curve - curve[0]) / (curve[-1] - curve[0])
+            distance = y - x
+            selected_count = int(candidates[int(np.argmax(distance))])
+            distances = distance.tolist()
+        else:
+            selected_count = int(candidates[-1])
+            distances = [0.0] * len(candidates)
+        for feature_count, cumulative, distance in zip(candidates, curve, distances):
+            elbow_rows.append({**{column: getattr(best, column, np.nan) for column in ["segment", "model_key", "model_name", "model_type", "product_class", "x_window", "y_window", "r_threshold"]}, "feature_count": int(feature_count), "cumulative_importance": float(cumulative), "marginal_importance": float(importance_frame.iloc[feature_count - 1]["importance_share"]), "elbow_distance": float(distance), "selected_feature_count": selected_count, "elbow_selected": feature_count == selected_count})
+        importance_frame["feature_rank"] = np.arange(1, len(importance_frame) + 1)
+        importance_frame["selected_by_elbow"] = importance_frame["feature_rank"] <= selected_count
+        for row in importance_frame.head(candidate_max).itertuples(index=False):
+            ranking_rows.append({"segment": best.segment, "model_key": best.model_key, "feature_rank": int(row.feature_rank), "feature": row.feature, "importance": float(row.importance), "importance_share": float(row.importance_share), "cumulative_importance": float(row.cumulative_importance), "selected_by_elbow": bool(row.selected_by_elbow)})
+    return pd.DataFrame(elbow_rows, columns=elbow_columns), pd.DataFrame(ranking_rows, columns=ranking_columns)
+
+
+def build_final_model_performance(metrics: pd.DataFrame | None, elbow_analysis: pd.DataFrame) -> pd.DataFrame:
+    """Keep final selected segment models and annotate their elbow feature count."""
+
+    if metrics is None or metrics.empty or elbow_analysis is None or elbow_analysis.empty:
+        return pd.DataFrame()
+    selected = elbow_analysis[elbow_analysis["elbow_selected"]].drop_duplicates("model_key")[["segment", "model_key", "selected_feature_count"]]
+    result = metrics.merge(selected, on=["segment", "model_key"], how="inner")
+    return result[result["split"].isin(["train", "test", "oot"])].sort_values(["segment", "model_key", "evaluation_stage", "split"]).reset_index(drop=True)
+
+
 def build_model_status_summary(metrics: pd.DataFrame, target_quality: pd.DataFrame | None = None) -> pd.DataFrame:
     """Keep every segment/configuration visible, including gated or skipped models."""
 
@@ -811,8 +876,14 @@ def build_general_summary(
     return pd.DataFrame(rows)
 
 
-def create_performance_figures(performance_summary: pd.DataFrame, general_summary: pd.DataFrame) -> dict[str, Any]:
-    """Create technical and general performance figures for notebook output."""
+def create_performance_figures(
+    performance_summary: pd.DataFrame,
+    general_summary: pd.DataFrame,
+    elbow_analysis: pd.DataFrame | None = None,
+    final_model_performance: pd.DataFrame | None = None,
+    amount_group_performance: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Create technical, elbow, final-model and amount-group figures."""
 
     import matplotlib.pyplot as plt
 
@@ -844,7 +915,48 @@ def create_performance_figures(performance_summary: pd.DataFrame, general_summar
         axis.set_ylabel("Adet")
         axis.tick_params(axis="x", rotation=35)
     general.tight_layout()
-    return {"technical": technical, "general": general}
+    elbow_figure, elbow_axis = plt.subplots(figsize=(12, 6))
+    if elbow_analysis is None or elbow_analysis.empty:
+        elbow_axis.text(0.5, 0.5, "Elbow analizi bulunmuyor", ha="center", va="center")
+    else:
+        for segment, group in elbow_analysis.groupby("segment", dropna=False):
+            elbow_axis.plot(group["feature_count"], group["cumulative_importance"], marker="o", linewidth=2, label=f"Segment {segment}")
+            selected = group[group["elbow_selected"]]
+            if not selected.empty:
+                elbow_axis.scatter(selected["feature_count"], selected["cumulative_importance"], s=110, zorder=3)
+        elbow_axis.set_title("Feature importance elbow analizi")
+        elbow_axis.set_xlabel("Feature sayısı")
+        elbow_axis.set_ylabel("Kümülatif importance payı")
+        elbow_axis.set_xticks(sorted(elbow_analysis["feature_count"].unique()))
+        elbow_axis.grid(axis="y", alpha=0.25)
+        elbow_axis.legend(frameon=False, ncol=2)
+    elbow_figure.tight_layout()
+
+    final_figure, final_axes = plt.subplots(1, 2, figsize=(15, 6))
+    if final_model_performance is None or final_model_performance.empty:
+        final_axes[0].text(0.5, 0.5, "Nihai model metriği bulunmuyor", ha="center", va="center")
+        final_axes[1].text(0.5, 0.5, "Tutar grup metriği bulunmuyor", ha="center", va="center")
+    else:
+        chart = final_model_performance[final_model_performance["evaluation_stage"].eq("final_selected_model")].copy()
+        chart["label"] = "S" + chart["segment"].astype(str) + " / " + chart["split"].astype(str)
+        final_axes[0].bar(chart["label"], chart["roc_auc"], color="#1f6f8b", label="ROC-AUC")
+        final_axes[0].bar(chart["label"], chart["gini"], bottom=0, color="#e08e0b", alpha=0.65, label="Gini")
+        final_axes[0].set_ylim(bottom=min(-1, float(chart[["roc_auc", "gini"]].min().min()) - 0.05), top=1.05)
+        final_axes[0].set_title("Nihai modeller: ROC-AUC ve Gini")
+        final_axes[0].tick_params(axis="x", rotation=45)
+        final_axes[0].legend(frameon=False)
+        if amount_group_performance is not None and not amount_group_performance.empty:
+            amount = amount_group_performance.copy()
+            amount["label"] = "S" + amount["segment"].astype(str) + " / G" + amount["amount_group"].astype(str)
+            final_axes[1].plot(amount["label"], amount["roc_auc"], marker="o", label="ROC-AUC", color="#1f6f8b")
+            final_axes[1].plot(amount["label"], amount["gini"], marker="o", label="Gini", color="#e08e0b")
+            final_axes[1].plot(amount["label"], amount["pr_auc"], marker="o", label="PR-AUC", color="#4c956c")
+            final_axes[1].set_title("Nihai modeller: tutar grubu performansı")
+            final_axes[1].tick_params(axis="x", rotation=65)
+            final_axes[1].legend(frameon=False)
+            final_axes[1].grid(axis="y", alpha=0.25)
+    final_figure.tight_layout()
+    return {"technical": technical, "general": general, "elbow": elbow_figure, "final": final_figure}
 
 
 def save_performance_charts(figures: dict[str, Any], output_dir: str | Path) -> dict[str, Path]:
@@ -855,6 +967,8 @@ def save_performance_charts(figures: dict[str, Any], output_dir: str | Path) -> 
     paths = {
         "technical": output_path / "propensity_performance_technical.png",
         "general": output_path / "propensity_performance_general.png",
+        "elbow": output_path / "propensity_feature_elbow.png",
+        "final": output_path / "propensity_final_model_performance.png",
     }
     for key, path in paths.items():
         figures[key].savefig(path, dpi=160, bbox_inches="tight")
@@ -878,6 +992,9 @@ def build_pipeline_audit(
     inflation_audit: pd.DataFrame | None = None,
     performance_summary: pd.DataFrame | None = None,
     amount_group_performance: pd.DataFrame | None = None,
+    elbow_analysis: pd.DataFrame | None = None,
+    feature_importance_ranking: pd.DataFrame | None = None,
+    final_model_performance: pd.DataFrame | None = None,
     general_summary: pd.DataFrame | None = None,
     overfit_audit: pd.DataFrame | None = None,
     runtime_summary: pd.DataFrame | None = None,
@@ -1023,6 +1140,9 @@ def build_pipeline_audit(
         "oot_scores": oot_scores if oot_scores is not None else pd.DataFrame(),
         "campaign_scores": campaign_scores if campaign_scores is not None else pd.DataFrame(),
         "amount_group_performance": amount_group_performance if amount_group_performance is not None else pd.DataFrame(),
+        "elbow_analysis": elbow_analysis if elbow_analysis is not None else pd.DataFrame(),
+        "feature_importance_ranking": feature_importance_ranking if feature_importance_ranking is not None else pd.DataFrame(),
+        "final_model_performance": final_model_performance if final_model_performance is not None else pd.DataFrame(),
         "performance_summary": performance_summary,
         "general_summary": general_summary,
         "overfit_audit": overfit_audit,
@@ -1055,6 +1175,9 @@ def write_pipeline_excel(audit_tables: dict[str, pd.DataFrame], output_path: str
         "oot_scores": "13_OOT_Scores",
         "campaign_scores": "14_Campaign_Scores",
         "amount_group_performance": "15_Amount_Group_Performance",
+        "elbow_analysis": "16_Elbow_Analysis",
+        "feature_importance_ranking": "17_Feature_Importance",
+        "final_model_performance": "18_Final_Model_Performance",
         "inflation_audit": "15_Inflation_Audit",
         "performance_summary": "16_Performance_Summary",
         "general_summary": "17_General_Summary",
@@ -1077,11 +1200,14 @@ def write_pipeline_excel(audit_tables: dict[str, pd.DataFrame], output_path: str
     sheet_names["oot_scores"] = "14_OOT_Scores"
     sheet_names["campaign_scores"] = "15_Campaign_Scores"
     sheet_names["amount_group_performance"] = "16_Amount_Group_Performance"
-    sheet_names["inflation_audit"] = "17_Inflation_Audit"
-    sheet_names["performance_summary"] = "18_Performance_Summary"
-    sheet_names["general_summary"] = "19_General_Summary"
-    sheet_names["overfit_audit"] = "20_Overfit_Audit"
-    sheet_names["model_status_summary"] = "21_Model_Status_Summary"
+    sheet_names["elbow_analysis"] = "17_Elbow_Analysis"
+    sheet_names["feature_importance_ranking"] = "18_Feature_Importance"
+    sheet_names["final_model_performance"] = "19_Final_Model_Performance"
+    sheet_names["inflation_audit"] = "20_Inflation_Audit"
+    sheet_names["performance_summary"] = "21_Performance_Summary"
+    sheet_names["general_summary"] = "22_General_Summary"
+    sheet_names["overfit_audit"] = "23_Overfit_Audit"
+    sheet_names["model_status_summary"] = "24_Model_Status_Summary"
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         for key, sheet_name in sheet_names.items():
             frame = audit_tables.get(key, pd.DataFrame())
@@ -1107,7 +1233,7 @@ def _add_excel_summary_charts(workbook: Any) -> None:
 
     from openpyxl.chart import BarChart, LineChart, Reference
 
-    performance_sheet = workbook["17_Performance_Summary"]
+    performance_sheet = workbook["21_Performance_Summary"]
     headers = {performance_sheet.cell(1, index).value: index for index in range(1, performance_sheet.max_column + 1)}
     if performance_sheet.max_row > 1 and {"chart_label", "pr_auc_mean", "roc_auc_mean"}.issubset(headers):
         chart = BarChart()
@@ -1135,7 +1261,7 @@ def _add_excel_summary_charts(workbook: Any) -> None:
         roc_chart.set_categories(categories)
         performance_sheet.add_chart(roc_chart, "J20")
 
-    general_sheet = workbook["18_General_Summary"]
+    general_sheet = workbook["22_General_Summary"]
     if general_sheet.max_row > 1 and general_sheet.max_column >= 2:
         chart = BarChart()
         chart.title = "General Pipeline Summary"
@@ -1147,6 +1273,35 @@ def _add_excel_summary_charts(workbook: Any) -> None:
         chart.add_data(data, titles_from_data=True)
         chart.set_categories(categories)
         general_sheet.add_chart(chart, "E2")
+
+    elbow_sheet = workbook["17_Elbow_Analysis"]
+    elbow_headers = {elbow_sheet.cell(1, index).value: index for index in range(1, elbow_sheet.max_column + 1)}
+    if elbow_sheet.max_row > 1 and {"feature_count", "cumulative_importance", "segment"}.issubset(elbow_headers):
+        chart = LineChart()
+        chart.title = "Feature importance elbow analysis"
+        chart.y_axis.title = "Cumulative importance"
+        chart.x_axis.title = "Feature count"
+        chart.height = 9
+        chart.width = 22
+        data = Reference(elbow_sheet, min_col=elbow_headers["cumulative_importance"], max_col=elbow_headers["cumulative_importance"], min_row=1, max_row=elbow_sheet.max_row)
+        categories = Reference(elbow_sheet, min_col=elbow_headers["feature_count"], max_col=elbow_headers["feature_count"], min_row=2, max_row=elbow_sheet.max_row)
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(categories)
+        elbow_sheet.add_chart(chart, "P2")
+
+    final_sheet = workbook["19_Final_Model_Performance"]
+    final_headers = {final_sheet.cell(1, index).value: index for index in range(1, final_sheet.max_column + 1)}
+    if final_sheet.max_row > 1 and {"split", "roc_auc", "gini"}.issubset(final_headers):
+        chart = BarChart()
+        chart.title = "Final selected model ROC-AUC and Gini"
+        chart.y_axis.title = "Metric"
+        chart.height = 9
+        chart.width = 22
+        data = Reference(final_sheet, min_col=final_headers["roc_auc"], max_col=final_headers["gini"], min_row=1, max_row=final_sheet.max_row)
+        categories = Reference(final_sheet, min_col=final_headers["split"], max_col=final_headers["split"], min_row=2, max_row=final_sheet.max_row)
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(categories)
+        final_sheet.add_chart(chart, "S2")
 
 
 def make_time_split(

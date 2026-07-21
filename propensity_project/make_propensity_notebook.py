@@ -112,6 +112,8 @@ from fund_propensity import (
     build_model_performance_summary,
     build_model_status_summary,
     build_amount_group_performance,
+    build_feature_elbow_analysis,
+    build_final_model_performance,
     build_overfit_audit,
     build_runtime_summary,
     build_feature_table,
@@ -177,6 +179,9 @@ ENABLE_OUTLIER_CLIPPING = True
 ADD_MISSING_INDICATORS = True
 AMOUNT_GROUP_COUNT = 10
 AMOUNT_GROUP_COLUMN = "fund_value_real"
+ELBOW_ENABLED = True
+ELBOW_MIN_FEATURES = 5
+ELBOW_MAX_FEATURES = 50
 INFLATION_REFERENCE_MONTH = None
 INFLATION_ADJUST_ALL_CONTINUOUS = True
 INPUT_TABLE_CUSTOMER_COLUMN = "musteri_id"
@@ -232,6 +237,9 @@ CONFIG = PropensityConfig(
     add_missing_indicators=ADD_MISSING_INDICATORS,
     amount_group_count=AMOUNT_GROUP_COUNT,
     amount_group_column=AMOUNT_GROUP_COLUMN,
+    elbow_enabled=ELBOW_ENABLED,
+    elbow_min_features=ELBOW_MIN_FEATURES,
+    elbow_max_features=ELBOW_MAX_FEATURES,
     inflation_reference_month=INFLATION_REFERENCE_MONTH,
     inflation_adjust_all_continuous=INFLATION_ADJUST_ALL_CONTINUOUS,
     input_table_file=INPUT_TABLE_FILE,
@@ -395,7 +403,11 @@ else:
     campaign_scores = pd.DataFrame()
 
 PERFORMANCE_SUMMARY = build_model_performance_summary(metrics)
-AMOUNT_GROUP_PERFORMANCE = build_amount_group_performance(oot_scores, targets, features, CONFIG)
+ELBOW_ANALYSIS, FEATURE_IMPORTANCE_RANKING = build_feature_elbow_analysis(metrics, model_registry, CONFIG)
+FINAL_MODEL_PERFORMANCE = build_final_model_performance(metrics, ELBOW_ANALYSIS)
+FINAL_MODEL_KEYS = ELBOW_ANALYSIS.loc[ELBOW_ANALYSIS["elbow_selected"], "model_key"].drop_duplicates().tolist() if not ELBOW_ANALYSIS.empty else []
+AMOUNT_GROUP_PERFORMANCE_ALL = build_amount_group_performance(oot_scores, targets, features, CONFIG)
+AMOUNT_GROUP_PERFORMANCE = AMOUNT_GROUP_PERFORMANCE_ALL[AMOUNT_GROUP_PERFORMANCE_ALL["model_key"].isin(FINAL_MODEL_KEYS)].copy() if FINAL_MODEL_KEYS else AMOUNT_GROUP_PERFORMANCE_ALL.iloc[0:0].copy()
 MODEL_STATUS_SUMMARY = build_model_status_summary(metrics, TARGET_QUALITY)
 OVERFIT_AUDIT = build_overfit_audit(metrics)
 GENERAL_SUMMARY = build_general_summary(
@@ -416,15 +428,21 @@ RUNTIME_SUMMARY = build_runtime_summary(
     overfit_audit=OVERFIT_AUDIT,
     elapsed_seconds=time.perf_counter() - RUN_STARTED,
 )
-FIGURES = create_performance_figures(PERFORMANCE_SUMMARY, GENERAL_SUMMARY)
+FIGURES = create_performance_figures(PERFORMANCE_SUMMARY, GENERAL_SUMMARY, ELBOW_ANALYSIS, FINAL_MODEL_PERFORMANCE, AMOUNT_GROUP_PERFORMANCE)
 display(FIGURES["technical"])
 display(FIGURES["general"])
+display(FIGURES["elbow"])
+display(FIGURES["final"])
 print("Runtime summary:")
 display(RUNTIME_SUMMARY)
 print("Overfit and rare-event performance audit:")
 display(OVERFIT_AUDIT)
 print("Segment/model status summary:")
 display(MODEL_STATUS_SUMMARY)
+print("Elbow analizi ve secilen feature sayilari:")
+display(ELBOW_ANALYSIS[ELBOW_ANALYSIS["elbow_selected"]] if not ELBOW_ANALYSIS.empty else ELBOW_ANALYSIS)
+print("Nihai secilen modellerin performansi:")
+display(FINAL_MODEL_PERFORMANCE)
 print("Segment içi tutar grubu performansı:")
 display(AMOUNT_GROUP_PERFORMANCE)
 CHART_PATHS = save_performance_charts(FIGURES, OUTPUT_DIR)
@@ -446,6 +464,9 @@ audit_tables = build_pipeline_audit(
     inflation_audit=INFLATION_AUDIT,
     performance_summary=PERFORMANCE_SUMMARY,
     amount_group_performance=AMOUNT_GROUP_PERFORMANCE,
+    elbow_analysis=ELBOW_ANALYSIS,
+    feature_importance_ranking=FEATURE_IMPORTANCE_RANKING,
+    final_model_performance=FINAL_MODEL_PERFORMANCE,
     general_summary=GENERAL_SUMMARY,
     overfit_audit=OVERFIT_AUDIT,
     runtime_summary=RUNTIME_SUMMARY,

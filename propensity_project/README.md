@@ -122,6 +122,10 @@ Missingness, constant, kategorik kardinalite/oran, outlier clipping, missing ind
 
 `AMOUNT_GROUP_COUNT = 10` ve `AMOUNT_GROUP_COLUMN = "fund_value_real"` ile OOT skorları her segment ve model/config içinde eşit adetli tutar gruplarına ayrılır. `Amount_Group_Performance` Excel sheet'i her grup için müşteri sayısı, pozitif sayısı, prevalence, PR-AUC, ROC-AUC, Gini ve `TOP_K` lift değerlerini içerir. Enflasyon ayarı kapalıysa veya seçilen kolon bulunamazsa rapor mevcut `fund_value_real`, `fund_value` ya da `fund_value_log1p` kolonuna fallback eder.
 
+### Nihai model ve elbow analizi
+
+`ELBOW_ENABLED`, `ELBOW_MIN_FEATURES` ve `ELBOW_MAX_FEATURES` ile segment bazlı en iyi OOT modelinin feature importance eğrisi analiz edilir. Varsayılan üst sınır 50'dir. Her segment için seçilen modelin `feature_count`, cumulative importance ve elbow mesafesi `Elbow_Analysis` sheet'inde; importance sıralaması `Feature_Importance` sheet'inde; nihai modelin train/test/OOT ROC-AUC, Gini, PR-AUC ve lift değerleri `Final_Model_Performance` sheet'inde yer alır. Notebook ayrıca `propensity_feature_elbow.png` ve `propensity_final_model_performance.png` grafiklerini üretir; ilgili Excel sheet'lerine de grafik gömülür.
+
 - Newsell: anchor dahil son `x` ayda pasif olup sonraki `y` ayda alım yapan müşteri.
 - Upsell: anchor ayında aktif olup sonraki `y` ay net alımının anchor fon değerine oranı en az `r` olan müşteri.
 - Future penceresi tamamlanmayan anchor ayları otomatik dışarıda kalır.
