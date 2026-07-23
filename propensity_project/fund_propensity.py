@@ -43,7 +43,7 @@ class PropensityConfig:
     enable_outlier_clipping: bool = True
     add_missing_indicators: bool = True
     amount_group_count: int = 10
-    amount_group_column: str = "fund_value_real"
+    amount_group_column: str = "tutar_amount"
     elbow_enabled: bool = True
     elbow_min_features: int = 5
     elbow_max_features: int = 50
@@ -59,7 +59,7 @@ class PropensityConfig:
     inflation_adjust_all_continuous: bool = True
     input_table_file: str | None = None
     input_table_customer_column: str = "musteri_id"
-    input_table_date_column: str = "month"
+    input_table_date_column: str = "tarih"
     input_table_product_column: str | None = "product_class"
     input_table_activity_columns: dict[str, str] = field(default_factory=lambda: dict(ACTIVITY_WIDE_COLUMNS))
     input_table_buy_column: str = "buy_amount"
@@ -69,23 +69,23 @@ class PropensityConfig:
     input_table_feature_aggregation: str = "first"
     activity_table_file: str | None = None
     activity_table_customer_column: str = "musteri_id"
-    activity_table_date_column: str = "month"
+    activity_table_date_column: str = "tarih"
     activity_ppf_flag_column: str = "ppf_aktif"
     activity_nf_flag_column: str = "nf_aktif"
     fund_table_file: str | None = None
     fund_table_customer_column: str = "musteri_id"
-    fund_table_date_column: str = "month"
+    fund_table_date_column: str = "tarih"
     fund_table_product_flag_column: str = "para_flg"
-    fund_table_value_column: str = "tutar"
+    fund_table_value_column: str = "fon_amount"
     transaction_table_file: str | None = None
     transaction_table_customer_column: str = "musteri_id"
-    transaction_table_date_column: str = "month"
-    transaction_table_product_flag_column: str = "ppf_flg"
-    transaction_table_buy_column: str = "alim_tutari"
-    transaction_table_sell_column: str = "satim_tutari"
+    transaction_table_date_column: str = "tarih"
+    transaction_table_product_flag_column: str = "para_flg"
+    transaction_table_buy_column: str = "fon_alim_amount"
+    transaction_table_sell_column: str = "fon_satim_amount"
     inflation_table_file: str | None = None
-    inflation_date_column: str = "month"
-    inflation_value_column: str = "inflation_rate"
+    inflation_date_column: str = "tarih"
+    inflation_value_column: str = "aylik_enflasyon"
     feature_windows: tuple[int, ...] = (1, 3, 6)
     feature_ratio_epsilon: float = 1e-6
 
@@ -656,16 +656,16 @@ def build_amount_group_performance(
     features: pd.DataFrame,
     config: PropensityConfig,
 ) -> pd.DataFrame:
-    """Evaluate OOT ranking separately for equal-count fund-value groups per segment."""
+    """Evaluate OOT ranking separately for equal-count input-amount groups per segment."""
 
     lift_columns = [f"lift_at_{fraction * 100:g}pct".replace(".", "_") for fraction in config.top_k]
-    columns = ["segment", "model_key", "model_type", "product_class", "x_window", "y_window", "r_threshold", "amount_group", "amount_group_count", "amount_lower", "amount_upper", "sample_count", "positive_count", "prevalence", "pr_auc", "roc_auc", "gini", *lift_columns]
+    columns = ["segment", "model_key", "model_type", "product_class", "x_window", "y_window", "r_threshold", "amount_source_column", "amount_group", "amount_group_count", "amount_lower", "amount_upper", "sample_count", "positive_count", "prevalence", "pr_auc", "roc_auc", "gini", *lift_columns]
     if oot_scores is None or oot_scores.empty or config.amount_group_count < 2:
         return pd.DataFrame(columns=columns)
     required_score = {"musteri_id", "anchor_month", "product_class", "model_key", "probability"}
     amount_column = config.amount_group_column
     if amount_column not in features.columns:
-        amount_column = next((column for column in ["fund_value_real", "fund_value", "fund_value_log1p"] if column in features.columns), "")
+        amount_column = next((column for column in ["tutar_amount", "tutar amount", "amount", "fund_value_real", "fund_value", "fund_value_log1p"] if column in features.columns), "")
     if not required_score.issubset(oot_scores.columns) or not amount_column:
         return pd.DataFrame(columns=columns)
     key_columns = ["musteri_id", "anchor_month", "product_class"]
@@ -686,7 +686,7 @@ def build_amount_group_performance(
         values = dict(zip(group_keys, group_key if isinstance(group_key, tuple) else (group_key,)))
         for amount_group, amount_slice in group.groupby("amount_group", dropna=False):
             evaluated = evaluate_predictions(amount_slice["target"], amount_slice["probability"], config.top_k)
-            rows.append({**values, "amount_group": int(amount_group), "amount_group_count": int(len(amount_slice)), "amount_lower": float(amount_slice[amount_column].min()), "amount_upper": float(amount_slice[amount_column].max()), "sample_count": evaluated["sample_count"], "positive_count": evaluated["positive_count"], "prevalence": evaluated["prevalence"], "pr_auc": evaluated["pr_auc"], "roc_auc": evaluated["roc_auc"], "gini": 2 * evaluated["roc_auc"] - 1 if pd.notna(evaluated["roc_auc"]) else np.nan, **{column: evaluated.get(column, np.nan) for column in lift_columns}})
+            rows.append({**values, "amount_source_column": amount_column, "amount_group": int(amount_group), "amount_group_count": int(len(amount_slice)), "amount_lower": float(amount_slice[amount_column].min()), "amount_upper": float(amount_slice[amount_column].max()), "sample_count": evaluated["sample_count"], "positive_count": evaluated["positive_count"], "prevalence": evaluated["prevalence"], "pr_auc": evaluated["pr_auc"], "roc_auc": evaluated["roc_auc"], "gini": 2 * evaluated["roc_auc"] - 1 if pd.notna(evaluated["roc_auc"]) else np.nan, **{column: evaluated.get(column, np.nan) for column in lift_columns}})
     return pd.DataFrame(rows, columns=columns).sort_values(group_keys + ["amount_group"]).reset_index(drop=True)
 
 
@@ -2011,6 +2011,92 @@ def _load_manual_tables(root: Path, config: PropensityConfig) -> SourceBundle:
         inflation_source = _read_configured_table(root, config.inflation_table_file, "enflasyon")
         _require_columns(inflation_source, [config.inflation_date_column, config.inflation_value_column], "enflasyon")
         inflation = inflation_source.rename(columns={config.inflation_date_column: "month", config.inflation_value_column: "inflation_rate"})[["month", "inflation_rate"]]
+    return adapt_source_bundle(SourceBundle(customers, activity, flows, monthly_features, inflation))
+
+
+def build_source_bundle_from_dataframes(
+    input_df: pd.DataFrame,
+    activity_df: pd.DataFrame,
+    fund_df: pd.DataFrame,
+    transaction_df: pd.DataFrame,
+    inflation_df: pd.DataFrame,
+    config: PropensityConfig | None = None,
+) -> SourceBundle:
+    """Build the canonical source bundle directly from five monthly DataFrames.
+
+    The input table supplies customer segments and monthly feature candidates. Fund
+    and transaction rows are mapped by ``para_flg``: 1 is PPF and 0 is NF.
+    """
+
+    config = config or PropensityConfig()
+    input_source = input_df.copy()
+    if "segment_id" in input_source.columns and "segment" not in input_source.columns:
+        input_source = input_source.rename(columns={"segment_id": "segment"})
+    _require_columns(input_source, [config.input_table_customer_column, config.input_table_date_column], "input DataFrame")
+    input_source = input_source.rename(columns={config.input_table_customer_column: "musteri_id", config.input_table_date_column: "month"})
+    input_source["musteri_id"] = input_source["musteri_id"].astype(str)
+    input_source["month"] = _month_start(input_source["month"])
+    if input_source["month"].isna().any():
+        raise ValueError("input DataFrame tarih kolonunda parse edilemeyen değer var")
+    customers = input_source[["musteri_id"] + (["segment"] if "segment" in input_source.columns else [])].drop_duplicates("musteri_id")
+    if "segment" not in customers:
+        customers["segment"] = "unknown"
+
+    activity_source = activity_df.copy()
+    _require_columns(activity_source, [config.activity_table_customer_column, config.activity_table_date_column, config.activity_ppf_flag_column, config.activity_nf_flag_column], "aktivite DataFrame")
+    activity = activity_source.rename(columns={config.activity_table_customer_column: "musteri_id", config.activity_table_date_column: "month", config.activity_ppf_flag_column: "ppf_aktif", config.activity_nf_flag_column: "nf_aktif"})[["musteri_id", "month", "ppf_aktif", "nf_aktif"]].copy()
+    activity["musteri_id"] = activity["musteri_id"].astype(str)
+    activity["month"] = _month_start(activity["month"])
+    for column in ("ppf_aktif", "nf_aktif"):
+        values = pd.to_numeric(activity[column], errors="coerce")
+        if values.isna().any() or ~values.isin([0, 1]).all():
+            raise ValueError(f"aktivite DataFrame {column} yalnızca 0/1 içermeli")
+        activity[column] = values.astype("int8")
+
+    fund_source = fund_df.copy()
+    _require_columns(fund_source, [config.fund_table_customer_column, config.fund_table_date_column, config.fund_table_product_flag_column, config.fund_table_value_column], "fon tutar DataFrame")
+    fund = fund_source.rename(columns={config.fund_table_customer_column: "musteri_id", config.fund_table_date_column: "month", config.fund_table_product_flag_column: "para_flg", config.fund_table_value_column: "fund_value"})[["musteri_id", "month", "para_flg", "fund_value"]].copy()
+    fund["musteri_id"] = fund["musteri_id"].astype(str)
+    fund["month"] = _month_start(fund["month"])
+    fund_flag = pd.to_numeric(fund["para_flg"], errors="coerce")
+    if fund_flag.isna().any() or ~fund_flag.isin([0, 1]).all():
+        raise ValueError("fon tutar DataFrame para_flg yalnızca 0/1 içermeli")
+    fund["product_class"] = np.where(fund_flag.eq(1), "para_piyasasi", "nitelikli")
+    fund["fund_value"] = pd.to_numeric(fund["fund_value"], errors="coerce").fillna(0.0)
+    fund = fund.groupby(["musteri_id", "month", "product_class"], as_index=False)["fund_value"].sum()
+
+    transaction_source = transaction_df.copy()
+    _require_columns(transaction_source, [config.transaction_table_customer_column, config.transaction_table_date_column, config.transaction_table_product_flag_column, config.transaction_table_buy_column, config.transaction_table_sell_column], "alım satım DataFrame")
+    transactions = transaction_source.rename(columns={config.transaction_table_customer_column: "musteri_id", config.transaction_table_date_column: "month", config.transaction_table_product_flag_column: "para_flg", config.transaction_table_buy_column: "buy_amount", config.transaction_table_sell_column: "sell_amount"})[["musteri_id", "month", "para_flg", "buy_amount", "sell_amount"]].copy()
+    transactions["musteri_id"] = transactions["musteri_id"].astype(str)
+    transactions["month"] = _month_start(transactions["month"])
+    transaction_flag = pd.to_numeric(transactions["para_flg"], errors="coerce")
+    if transaction_flag.isna().any() or ~transaction_flag.isin([0, 1]).all():
+        raise ValueError("alım satım DataFrame para_flg yalnızca 0/1 içermeli")
+    transactions["product_class"] = np.where(transaction_flag.eq(1), "para_piyasasi", "nitelikli")
+    transactions["buy_amount"] = pd.to_numeric(transactions["buy_amount"], errors="coerce").fillna(0.0)
+    transactions["sell_amount"] = pd.to_numeric(transactions["sell_amount"], errors="coerce").fillna(0.0)
+    transactions = transactions.groupby(["musteri_id", "month", "product_class"], as_index=False)[["buy_amount", "sell_amount"]].sum()
+    flows = fund.merge(transactions, on=["musteri_id", "month", "product_class"], how="outer", validate="one_to_one")
+    for column in ("fund_value", "buy_amount", "sell_amount"):
+        flows[column] = pd.to_numeric(flows[column], errors="coerce").fillna(0.0)
+
+    reserved = {config.input_table_customer_column, config.input_table_date_column, "musteri_id", "month", "segment"}
+    feature_columns = list(config.input_table_feature_columns) if config.input_table_feature_columns else [column for column in input_source.columns if column not in reserved]
+    feature_columns = [column for column in feature_columns if column in input_source.columns]
+    monthly_features = input_source[["musteri_id", "month", *feature_columns]].copy()
+    monthly_features = monthly_features.groupby(["musteri_id", "month"], as_index=False)[feature_columns].first() if feature_columns else pd.DataFrame(columns=["musteri_id", "month"])
+
+    inflation_source = inflation_df.copy()
+    inflation_value_column = config.inflation_value_column
+    if inflation_value_column not in inflation_source.columns and "aylık_enflasyon" in inflation_source.columns:
+        inflation_value_column = "aylık_enflasyon"
+    _require_columns(inflation_source, [config.inflation_date_column, inflation_value_column], "enflasyon DataFrame")
+    inflation = inflation_source.rename(columns={config.inflation_date_column: "month", inflation_value_column: "inflation_rate"})[["month", "inflation_rate"]].copy()
+    inflation["month"] = _month_start(inflation["month"])
+    inflation["inflation_rate"] = pd.to_numeric(inflation["inflation_rate"], errors="coerce")
+    if inflation["inflation_rate"].isna().any() or (inflation["inflation_rate"] < 0).any() or (inflation["inflation_rate"] >= 1).any():
+        raise ValueError("enflasyon DataFrame aylık değerleri 0 ile 1 arasında olmalı")
     return adapt_source_bundle(SourceBundle(customers, activity, flows, monthly_features, inflation))
 
 

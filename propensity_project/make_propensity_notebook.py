@@ -38,7 +38,7 @@ example_months = pd.period_range("2025-09", "2026-06", freq="M").astype(str)
 example_customers = pd.DataFrame({
     "musteri_id": [f"M{i:04d}" for i in range(1, 151)],
 })
-example_customers["segment"] = ((np.arange(len(example_customers)) % 5) + 1).astype(int)
+example_customers["segment_id"] = ((np.arange(len(example_customers)) % 5) + 1).astype(int)
 example_customers["gelir"] = rng.lognormal(mean=10.4, sigma=0.45, size=len(example_customers)).round(2)
 example_customers["risk_skoru"] = rng.normal(loc=650, scale=55, size=len(example_customers)).clip(350, 850).round(1)
 
@@ -47,44 +47,36 @@ example_panel = pd.MultiIndex.from_product(
     names=["musteri_id", "month"],
 ).to_frame(index=False).merge(example_customers, on="musteri_id", how="left")
 example_panel["month_index"] = example_panel["month"].map({month: index for index, month in enumerate(example_months)})
-segment_signal = example_panel["segment"].isin([2, 4]).astype(float)
+segment_signal = example_panel["segment_id"].isin([2, 4]).astype(float)
 example_panel["ppf_aktif"] = (rng.random(len(example_panel)) < (0.52 + 0.12 * segment_signal)).astype(int)
 example_panel["nf_aktif"] = (rng.random(len(example_panel)) < (0.38 + 0.10 * (1 - segment_signal))).astype(int)
+example_panel["tutar_amount"] = rng.gamma(shape=3.2, scale=16000, size=len(example_panel)).round(2)
 
-input_table = example_panel[["musteri_id", "month", "segment", "gelir", "risk_skoru"]]
+input_table = example_panel[["musteri_id", "month", "segment_id", "tutar_amount", "gelir", "risk_skoru"]]
 activity_table = example_panel[["musteri_id", "month", "ppf_aktif", "nf_aktif"]]
 
 fund_table = example_panel[["musteri_id", "month"]].loc[example_panel.index.repeat(2)].reset_index(drop=True)
 fund_table["para_flg"] = np.tile([1, 0], len(example_panel))
-fund_table["tutar"] = np.where(
+fund_table["fon_amount"] = np.where(
     fund_table["para_flg"].eq(1),
     rng.gamma(shape=3.0, scale=18000, size=len(fund_table)),
     rng.gamma(shape=2.5, scale=12000, size=len(fund_table)),
 ).round(2)
 
-transaction_table = fund_table[["musteri_id", "month", "para_flg"]].rename(columns={"para_flg": "ppf_flg"})
-transaction_table["alim_tutari"] = rng.gamma(shape=1.8, scale=900, size=len(transaction_table)).round(2)
-transaction_table["satim_tutari"] = rng.gamma(shape=1.4, scale=650, size=len(transaction_table)).round(2)
-transaction_table.loc[transaction_table["month"].eq("2026-06"), "alim_tutari"] *= 1.8
+transaction_table = fund_table[["musteri_id", "month", "para_flg"]].copy()
+transaction_table["fon_alim_amount"] = rng.gamma(shape=1.8, scale=900, size=len(transaction_table)).round(2)
+transaction_table["fon_satim_amount"] = rng.gamma(shape=1.4, scale=650, size=len(transaction_table)).round(2)
+transaction_table.loc[transaction_table["month"].eq("2026-06"), "fon_alim_amount"] *= 1.8
 
 inflation_table = pd.DataFrame({
-    "month": example_months,
-    "inflation_rate": [0.025, 0.028, 0.030, 0.027, 0.024, 0.022, 0.021, 0.020, 0.019, 0.018],
+    "tarih": example_months,
+    "aylik_enflasyon": [0.025, 0.028, 0.030, 0.027, 0.024, 0.022, 0.021, 0.020, 0.019, 0.018],
 })
-
-for filename, frame in {
-    "input.csv": input_table,
-    "aktiflik.csv": activity_table,
-    "fon_tutar.csv": fund_table,
-    "alim_satim.csv": transaction_table,
-    "enflasyon.csv": inflation_table,
-}.items():
-    frame.to_csv(EXAMPLE_DATA_ROOT / filename, index=False)
-
-os.environ.setdefault("PROPENSITY_DATA_ROOT", str(EXAMPLE_DATA_ROOT))
-print("Ornek veri klasoru:", EXAMPLE_DATA_ROOT.resolve())
-print("Olusturulan tablolar:", ", ".join(sorted(path.name for path in EXAMPLE_DATA_ROOT.glob("*.csv"))))
-print("Ornek satir sayilari:")
+input_table = input_table.rename(columns={"month": "tarih"})
+activity_table = activity_table.rename(columns={"month": "tarih"})
+fund_table = fund_table.rename(columns={"month": "tarih"})
+transaction_table = transaction_table.rename(columns={"month": "tarih"})
+print("Ornek DataFrame tabloları hazırlandı; CSV yazılmadı.")
 display(pd.DataFrame({
     "table": ["input", "activity", "fund", "transaction", "inflation"],
     "rows": [len(input_table), len(activity_table), len(fund_table), len(transaction_table), len(inflation_table)],
@@ -96,7 +88,7 @@ Bu notebook yalnizca bes uygulama adimindan olusur: **data load**, **preprocess*
 Her asamada degisken kalitesi, elenen veya donusturulen degiskenler, satir sayilari ve karar gerekceleri notebook output'una yazdirilir. Ayni tablolar detayli bir Excel workbook icinde sheet sheet kaydedilir.
 
 Model evreni iki urun sinifi (`para_piyasasi`, `nitelikli`) ve iki hedeften (`newsell`, `upsell`) olusur. Model tuning icin Optuna TPE sampler, `MedianPruner` ve LightGBM iterasyon pruning kullanilir.""", "markdown", "cell-01"),
-        _cell("markdown", "## 1. Data Load\n\nKullanici config'inde belirtilen input, aktivite, fon tutar, alım-satım ve enflasyon tabloları CSV veya Parquet olarak okunur. Tüm tablolar müşteri ID + ay anahtarıyla 2025.09-2026.06 aylık döneminde bağlanır; sentetik fallback yoktur. Rare-event hedeflerde test ve OOT performansı iki aylık pencerelerde toplanır; her split için minimum pozitif sayısı kontrol edilir.", "markdown", "cell-02"),
+        _cell("markdown", "## 1. Data Load\n\nÜstte bellekte oluşturulan beş manuel DataFrame (`input_table`, `activity_table`, `fund_table`, `transaction_table`, `inflation_table`) doğrudan canonical source bundle'a dönüştürülür. CSV veya Parquet klasörü okunmaz; tüm tablolar müşteri ID + ay anahtarıyla bağlanır. Rare-event hedeflerde test ve OOT performansı iki aylık pencerelerde toplanır; her split için minimum pozitif sayısı kontrol edilir.", "markdown", "cell-02"),
         _cell("code", """import os
 import time
 from pathlib import Path
@@ -112,6 +104,7 @@ from fund_propensity import (
     build_model_performance_summary,
     build_model_status_summary,
     build_amount_group_performance,
+    build_source_bundle_from_dataframes,
     build_feature_elbow_analysis,
     build_final_model_performance,
     build_overfit_audit,
@@ -178,30 +171,30 @@ OUTLIER_UPPER_QUANTILE = 0.99
 ENABLE_OUTLIER_CLIPPING = True
 ADD_MISSING_INDICATORS = True
 AMOUNT_GROUP_COUNT = 10
-AMOUNT_GROUP_COLUMN = "fund_value_real"
+AMOUNT_GROUP_COLUMN = "tutar_amount"
 ELBOW_ENABLED = True
 ELBOW_MIN_FEATURES = 5
 ELBOW_MAX_FEATURES = 50
 INFLATION_REFERENCE_MONTH = None
 INFLATION_ADJUST_ALL_CONTINUOUS = True
 INPUT_TABLE_CUSTOMER_COLUMN = "musteri_id"
-INPUT_TABLE_DATE_COLUMN = "month"
-INPUT_TABLE_FEATURE_COLUMNS = None
+INPUT_TABLE_DATE_COLUMN = "tarih"
+INPUT_TABLE_FEATURE_COLUMNS = ("tutar_amount", "gelir", "risk_skoru")
 ACTIVITY_TABLE_CUSTOMER_COLUMN = "musteri_id"
-ACTIVITY_TABLE_DATE_COLUMN = "month"
+ACTIVITY_TABLE_DATE_COLUMN = "tarih"
 ACTIVITY_PPF_FLAG_COLUMN = "ppf_aktif"
 ACTIVITY_NF_FLAG_COLUMN = "nf_aktif"
 FUND_TABLE_CUSTOMER_COLUMN = "musteri_id"
-FUND_TABLE_DATE_COLUMN = "month"
+FUND_TABLE_DATE_COLUMN = "tarih"
 FUND_TABLE_PRODUCT_FLAG_COLUMN = "para_flg"
-FUND_TABLE_VALUE_COLUMN = "tutar"
+FUND_TABLE_VALUE_COLUMN = "fon_amount"
 TRANSACTION_TABLE_CUSTOMER_COLUMN = "musteri_id"
-TRANSACTION_TABLE_DATE_COLUMN = "month"
-TRANSACTION_TABLE_PRODUCT_FLAG_COLUMN = "ppf_flg"
-TRANSACTION_TABLE_BUY_COLUMN = "alim_tutari"
-TRANSACTION_TABLE_SELL_COLUMN = "satim_tutari"
-INFLATION_DATE_COLUMN = "month"
-INFLATION_VALUE_COLUMN = "inflation_rate"
+TRANSACTION_TABLE_DATE_COLUMN = "tarih"
+TRANSACTION_TABLE_PRODUCT_FLAG_COLUMN = "para_flg"
+TRANSACTION_TABLE_BUY_COLUMN = "fon_alim_amount"
+TRANSACTION_TABLE_SELL_COLUMN = "fon_satim_amount"
+INFLATION_DATE_COLUMN = "tarih"
+INFLATION_VALUE_COLUMN = "aylik_enflasyon"
 FEATURE_WINDOWS = (1, 3, 6, 12)
 
 CONFIG = PropensityConfig(
@@ -272,7 +265,7 @@ OPTUNA_TIMEOUT_SECONDS = int(os.getenv("PROPENSITY_OPTUNA_TIMEOUT_SECONDS", "600
 MAX_CONFIGURATIONS = os.getenv("PROPENSITY_MAX_CONFIGURATIONS")
 MAX_CONFIGURATIONS = int(MAX_CONFIGURATIONS) if MAX_CONFIGURATIONS else None
 stage_started = start_stage("Data Load")
-BUNDLE = load_bundle_from_directory(DATA_ROOT, CONFIG)
+BUNDLE = build_source_bundle_from_dataframes(input_table, activity_table, fund_table, transaction_table, inflation_table, CONFIG)
 QUALITY = validate_sources(BUNDLE, CONFIG)
 DATA_LOAD_QUALITY = pd.concat([
     variable_quality_report(frame, "data_load", name)
@@ -284,7 +277,8 @@ DATA_LOAD_QUALITY = pd.concat([
         "inflation": BUNDLE.inflation,
     }.items() if not frame.empty
 ], ignore_index=True)
-print("Data source:", DATA_ROOT.resolve())
+print("Data source: üst hücrelerdeki manuel DataFrame'ler (in-memory)")
+print("Manual DataFrames:", ["input_table", "activity_table", "fund_table", "transaction_table", "inflation_table"])
 print("Source summary:")
 print(pd.DataFrame([QUALITY]).to_string(index=False))
 print("Variable quality - data_load:")

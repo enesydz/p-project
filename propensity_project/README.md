@@ -63,17 +63,35 @@ Notebook yalnızca şu beş uygulama bölümünü içerir: `Data Load`, `Preproc
 - Sürekli feature standardizasyonu: train, test ve OOT feature değerleri enflasyon tablosundan hesaplanan ortak OOT referans tarihine taşınır; target üretimi nominal iş kuralı üzerinde korunur
 - Chart çıktıları: notebook output'unda teknik/genel performans chart'ları, output klasöründe PNG dosyaları ve Excel'de gömülü chart'lar
 
-### Manuel aylık veri yükleme sözleşmesi
+### Manuel aylık DataFrame sözleşmesi
 
-Notebook veri üretmez ve sentetik fallback kullanmaz. `Data Load` hücresindeki kullanıcı config'inde veri klasörü ile beş aylık tablo dosyası elle belirtilir. Tüm tablolar müşteri ID + ay anahtarıyla bağlanır; beklenen dönem `2025-09` ile `2026-06` arasındadır.
+Notebook örneği veri üretimini beş DataFrame olarak bellekte yapar; CSV round-trip kullanmaz. Gerçek uygulamada bu DataFrame'ler banka kaynaklarından manuel olarak hazırlanıp doğrudan `build_source_bundle_from_dataframes` fonksiyonuna verilir. Tüm tablolar müşteri ID + ay anahtarıyla bağlanır; beklenen dönem `2025-09` ile `2026-06` arasındadır.
 
-| Config dosyası | Zorunlu alanlar | Kullanım |
+| DataFrame | Zorunlu alanlar | Kullanım |
 |---|---|---|
-| `INPUT_TABLE_FILE` | `musteri_id`, `month`, opsiyonel `segment`, aylık değişkenler | Müşteri-ay ana tablosu ve feature adayları |
-| `ACTIVITY_TABLE_FILE` | `musteri_id`, `month`, `ppf_aktif`, `nf_aktif` | PPF/NF aktiflik flag'leri; yalnızca `0/1` |
-| `FUND_TABLE_FILE` | `musteri_id`, `month`, `para_flg`, `tutar` | `para_flg=1` PPF, `para_flg=0` NF fon tutarı |
-| `TRANSACTION_TABLE_FILE` | `musteri_id`, `month`, `ppf_flg`, `alim_tutari`, `satim_tutari` | `ppf_flg=1` PPF, `ppf_flg=0` NF; net alım = alım - satım |
-| `INFLATION_TABLE_FILE` | `month`, `inflation_rate` | Sürekli tutarları ortak OOT ayına taşımak için aylık enflasyon |
+| `input_df` | `musteri_id`, `tarih`, `segment_id`, `tutar_amount`, aylık değişkenler | Müşteri-ay ana tablosu, ana tutar ve feature adayları |
+| `activity_df` | `musteri_id`, `tarih`, `ppf_aktif`, `nf_aktif` | PPF/NF aktiflik flag'leri; yalnızca `0/1` |
+| `fund_df` | `musteri_id`, `tarih`, `para_flg`, `fon_amount` | `para_flg=1` PPF, `para_flg=0` NF fon tutarı |
+| `transaction_df` | `musteri_id`, `tarih`, `para_flg`, `fon_alim_amount`, `fon_satim_amount` | PPF/NF işlemleri; net alım = alım - satım |
+| `inflation_df` | `tarih`, `aylik_enflasyon` | Sürekli tutarları ortak OOT ayına taşımak için aylık enflasyon |
+
+Doğrudan kullanım:
+
+```python
+from fund_propensity import PropensityConfig, build_source_bundle_from_dataframes
+
+bundle = build_source_bundle_from_dataframes(
+	input_df=df_input,
+	activity_df=df_aktiflik,
+	fund_df=df_fon_tutar,
+	transaction_df=df_fon_alim_satim,
+	inflation_df=df_enflasyon,
+	config=PropensityConfig(),
+)
+panel = build_canonical_panel(bundle, PropensityConfig())
+```
+
+Adapter `tarih` kolonunu dahili `month` adına, `segment_id` kolonunu `segment` adına ve tutar/işlem kolonlarını canonical isimlere çevirir. Ana input'taki `tutar_amount` feature tablosuna taşınır ve OOT tutar gruplamasının sıralama kolonu olarak kullanılır. Kaynaklarda aynı müşteri-ay-ürün birden fazla kez bulunursa tutar ve işlem akışları toplanır; aktiflik ve enflasyon değerleri doğrulanır.
 
 Dosya adları CSV, TXT veya Parquet olabilir. Farklı kolon adları varsa Data Load hücresindeki kolon config değerleri değiştirilir. Input tablosundaki aylık değişkenler `INPUT_TABLE_FEATURE_COLUMNS` ile açıkça seçilebilir.
 
@@ -109,7 +127,7 @@ Reporting aşaması varsayılan olarak `propensity_outputs/fund_propensity_pipel
 
 Çıktı adı `PROPENSITY_REPORT_NAME` ortam değişkeniyle değiştirilebilir; Excel dosyası açıkken yeni raporu örneğin `fund_propensity_pipeline_audit_advanced.xlsx` adıyla yazabilirsiniz.
 
-`Eliminated_Vars` ve `Feature_Quality` sheet'lerinde key kolonlarının, constant kolonların, dönüştürülen aktivite kolonlarının ve modele alınmayan diğer değişkenlerin açık karar gerekçesi bulunur. `Feature_Engineering` her segment için değişkenin kaynağını, dönüşümünü, lookback/anchor dönemini ve dağılım bazlı outlier analizini taşır. `Model_Feature_Audit` her segment-model splitinde train verisinden öğrenilen missing, outlier, high-cardinality, correlation ve encoding kararlarını; train dönemi kapsamını ve fit scope'u gösterir. Missingness, constant, kategorik kardinalite/oran, outlier clipping, missing indicator ve correlation kontrollerinin her biri notebook config'inde ayrı ayrı açılıp kapatılabilir; kapalı kontroller audit'te `disabled` olarak görünür. Numeric değişkenler ilgili segmentin train quantile sınırlarıyla clip edilir; kategorik değişkenler yalnız train kategorileriyle one-hot encode edilir ve validation/OOT'ta görülmeyen kategoriler güvenli biçimde sıfır vektörüne dönüşür. Yalnız quality kontrolünü geçen ve `musteri_id`, `anchor_month`, `product_class`, `segment` olmayan kolonlar model girdisi olarak Optuna-LightGBM'e aktarılır. `Target_Quality` segment x grid bazında tüm uygunluk kararlarını içerir. `Model_Metrics` içinde ROC-AUC, Gini, PR-AUC, Brier ve lift metrikleri; `best_trial_model` train-only performansı ile `final_selected_model` train+test refit performansı ayrı etiketlenir. `Amount_Group_Performance` OOT skorlarını her segment içinde `fund_value` sıralamasına göre eşit adetli 10 gruba ayırır ve her grup için örneklem, pozitif oranı, ROC-AUC, Gini, PR-AUC ve TOP-K lift değerlerini raporlar. `Optuna_Trials` her trial için train/test/OOT metriklerini ve durumunu taşır; `Target_Audit`, `OOT_Scores` ve `Campaign_Scores` tamamlayıcı model ve aksiyon çıktılarıdır. Excel yazımı için `openpyxl` gereklidir.
+`Eliminated_Vars` ve `Feature_Quality` sheet'lerinde key kolonlarının, constant kolonların, dönüştürülen aktivite kolonlarının ve modele alınmayan diğer değişkenlerin açık karar gerekçesi bulunur. `Feature_Engineering` her segment için değişkenin kaynağını, dönüşümünü, lookback/anchor dönemini ve dağılım bazlı outlier analizini taşır. `Model_Feature_Audit` her segment-model splitinde train verisinden öğrenilen missing, outlier, high-cardinality, correlation ve encoding kararlarını; train dönemi kapsamını ve fit scope'u gösterir. Missingness, constant, kategorik kardinalite/oran, outlier clipping, missing indicator ve correlation kontrollerinin her biri notebook config'inde ayrı ayrı açılıp kapatılabilir; kapalı kontroller audit'te `disabled` olarak görünür. Numeric değişkenler ilgili segmentin train quantile sınırlarıyla clip edilir; kategorik değişkenler yalnız train kategorileriyle one-hot encode edilir ve validation/OOT'ta görülmeyen kategoriler güvenli biçimde sıfır vektörüne dönüşür. Yalnız quality kontrolünü geçen ve `musteri_id`, `anchor_month`, `product_class`, `segment` olmayan kolonlar model girdisi olarak Optuna-LightGBM'e aktarılır. `Target_Quality` segment x grid bazında tüm uygunluk kararlarını içerir. `Model_Metrics` içinde ROC-AUC, Gini, PR-AUC, Brier ve lift metrikleri; `best_trial_model` train-only performansı ile `final_selected_model` train+test refit performansı ayrı etiketlenir. `Amount_Group_Performance` OOT skorlarını her segment içinde ana input tablosundan gelen `tutar_amount` sıralamasına göre eşit adetli 10 gruba ayırır ve her grup için örneklem, pozitif oranı, ROC-AUC, Gini, PR-AUC ve TOP-K lift değerlerini raporlar. `Optuna_Trials` her trial için train/test/OOT metriklerini ve durumunu taşır; `Target_Audit`, `OOT_Scores` ve `Campaign_Scores` tamamlayıcı model ve aksiyon çıktılarıdır. Excel yazımı için `openpyxl` gereklidir.
 Enflasyon referans ayı notebook config'inde `PROPENSITY_INFLATION_REFERENCE_MONTH` ile verilebilir. Boş bırakılırsa tüm grid için ortak referans, panelin son ayından en küçük `y_window` çıkarılarak seçilen en güncel tamamlanmış OOT anchor ayıdır. `fund_value`, `buy_amount`, `sell_amount`, `net_buy`, `monthly_income` gibi sürekli değişkenler bu tarihe taşınır; flag, rate, ratio, count ve index kolonları taşınmaz. `fund_value_real` ve rolling monetary feature'lar bu ortak bazda üretilir.
 
 Notebook reporting hücresi eleme/trimming özetlerini, `Runtime_Summary` ve `Overfit_Audit` tablolarını doğrudan output'a basar; ayrıca `propensity_performance_technical.png` ve `propensity_performance_general.png` dosyalarını output klasörüne yazar. Teknik chart rare-event için ana metrik olan PR-AUC ile ROC-AUC'yi ayrı panellerde ve ayrı Excel chart'larında gösterir. `Overfit_Audit`, train-test veya test-OOT PR-AUC farkı `0.20` değerini aşarsa `CHECK` üretir; test ve OOT PR-AUC prevalence baseline'ının altında kalırsa performans kontrolü de `CHECK` olur. Böylece düşük target oranında yalnızca yüksek görünen ROC-AUC'ye dayanılmaz.
@@ -120,7 +138,7 @@ Notebook reporting hücresi eleme/trimming özetlerini, `Runtime_Summary` ve `Ov
 
 Missingness, constant, kategorik kardinalite/oran, outlier clipping, missing indicator ve correlation kontrolleri notebook config'inde ayrı ayrı açılıp kapatılabilir: `ENABLE_MISSING_FILTER`, `ENABLE_CONSTANT_FILTER`, `ENABLE_CATEGORICAL_FILTER`, `ENABLE_OUTLIER_CLIPPING`, `ENABLE_CORRELATION_FILTER` ve `ADD_MISSING_INDICATORS`. Kapalı kontroller model feature audit'inde `disabled` olarak görünür; tüm kararlar yalnızca ilgili segmentin train verisinde fit edilir. `CORRELATION_SAMPLE_SIZE` yalnızca correlation matrisi için kullanılır.
 
-`AMOUNT_GROUP_COUNT = 10` ve `AMOUNT_GROUP_COLUMN = "fund_value_real"` ile OOT skorları her segment ve model/config içinde eşit adetli tutar gruplarına ayrılır. `Amount_Group_Performance` Excel sheet'i her grup için müşteri sayısı, pozitif sayısı, prevalence, PR-AUC, ROC-AUC, Gini ve `TOP_K` lift değerlerini içerir. Enflasyon ayarı kapalıysa veya seçilen kolon bulunamazsa rapor mevcut `fund_value_real`, `fund_value` ya da `fund_value_log1p` kolonuna fallback eder.
+`AMOUNT_GROUP_COUNT = 10` ve `AMOUNT_GROUP_COLUMN = "tutar_amount"` ile ana input tablosundan gelen tutar, her segment ve model/config içinde OOT skorlarına göre eşit adetli 10 gruba ayrılır. `Amount_Group_Performance` Excel sheet'i her segment/model/tutar grubu için örneklem, pozitif sayısı, prevalence, PR-AUC, ROC-AUC, Gini ve `TOP_K` lift değerlerini içerir. Ana input'ta `tutar_amount` bulunamazsa açıkça yapılandırılmış kolon veya `tutar amount`, `amount`, `fund_value_real`, `fund_value` fallback sırası kullanılır.
 
 ### Nihai model ve elbow analizi
 
